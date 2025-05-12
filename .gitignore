@@ -1,0 +1,29 @@
+# 빌드 결과물
+*.o
+*.obj
+*.exe
+*.out
+*.a
+*.so
+*.dll
+
+# 실행 바이너리
+multicam
+
+# 로그 및 출력 디렉토리
+output/
+*.log
+*.csv
+*.mp4
+*.h264
+
+# macOS 관련
+.DS_Store
+
+# Windows 관련
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Visual Studio Code
+.vscode/
