@@ -4,23 +4,24 @@
 #include <string>
 #include <cstdint>
 
-// ?꾨젅??硫뷀??곗씠??援ъ“泥?
+// 프레임 메타데이터 구조체
 struct FrameMeta {
     int frame_index;
-    uint64_t timestamp_ns;    // sampleTime (100ns ?⑥쐞 ??ns ?⑥쐞濡?蹂?섎맖)
-    int64_t relative_us;      // T? 湲곗? ?곷? ?쒓컙 (留덉씠?щ줈珥?
-    int camera_id;            // ?μ튂 援щ텇??
+    uint64_t timestamp_ns;    // sampleTime (100ns 단위 → ns 단위로 변환됨)
+    int64_t relative_us;      // T₀ 기준 상대 시간 (마이크로초)
+    int camera_id;            // 장치 구분용 ID
 };
 
-// 罹≪쿂 ?ㅼ젙 援ъ“泥?
+// 캡처 설정 구조체
 struct CaptureConfig {
     int camera_id;
     int width = 1280;
     int height = 720;
     int fps = 30;
-    std::string ffmpeg_path = "ffmpeg"; // 寃쎈줈媛 ?ㅻⅤ?ㅻ㈃ ?섏젙 ?꾩슂
-    std::string output_filename;        // cam_0.mp4 ? 媛숈? ?뚯씪紐?
-    std::string log_filename;           // cam_0_log.csv ? 媛숈? 濡쒓렇?뚯씪
+    int duration_sec = 10;
+    std::string ffmpeg_path = "ffmpeg"; // ffmpeg 경로 (필요 시 수정 가능)
+    std::string output_filename;        // 출력 영상 파일명 (예: cam_0.mp4)
+    std::string log_filename;           // 로그 CSV 파일명 (예: cam_0_log.csv)
 };
 
 #endif // COMMON_HPP

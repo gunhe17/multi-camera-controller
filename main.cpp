@@ -21,6 +21,7 @@ int main() {
             1280,
             720,
             30,
+            5,
             "ffmpeg",
             "output/cam_0.mp4",        // ffmpeg 연결 시 사용 예정
             "output/cam_0_log.csv"
@@ -30,6 +31,7 @@ int main() {
             1280,
             720,
             30,
+            5,
             "ffmpeg",
             "output/cam_1.mp4",
             "output/cam_1_log.csv"
@@ -59,8 +61,8 @@ int main() {
     // 3. 모든 카메라 동시 시작
     manager.start_all();
 
-    // 4. 일정 시간 대기 (예: 10초간 촬영)
-    std::this_thread::sleep_for(std::chrono::seconds(10));
+    // 4. 일정 시간 대기
+    std::this_thread::sleep_for(std::chrono::seconds(configs[0].duration_sec + 5));
 
     // 5. 촬영 종료 및 정리
     manager.stop_all();
