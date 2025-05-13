@@ -15,7 +15,7 @@ public:
     bool start() {
 
         std::string command = config_.ffmpeg_path +
-            " -loglevel debug -report -y" + 
+            " -loglevel debug -y" + 
             " -f rawvideo -pixel_format yuyv422" +
             " -video_size " + std::to_string(config_.width) + "x" + std::to_string(config_.height) +
             " -framerate " + std::to_string(config_.fps) +

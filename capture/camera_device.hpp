@@ -17,6 +17,9 @@
 #include <atomic>
 #include <iostream>
 #include <chrono>
+#include <iomanip>
+#include <condition_variable>
+#include <mutex>
 
 #pragma comment(lib, "mfplat.lib")
 #pragma comment(lib, "mf.lib")
@@ -26,9 +29,20 @@
 
 class CameraDevice {
 public:
-    CameraDevice(const CaptureConfig& config, TimestampLogger& logger)
-        : config_(config), logger_(logger), is_running_(false),
-          pSource_(nullptr), pSourceReader_(nullptr), writer_(config) {}
+    CameraDevice(const CaptureConfig& config,
+                 TimestampLogger& logger,
+                 std::shared_ptr<std::condition_variable> cv,
+                 std::shared_ptr<std::mutex> mutex,
+                 std::shared_ptr<bool> go_flag)
+        : config_(config),
+          logger_(logger),
+          sync_cv_(cv),
+          sync_mutex_(mutex),
+          sync_go_flag_(go_flag),
+          is_running_(false),
+          pSource_(nullptr),
+          pSourceReader_(nullptr),
+          writer_(config) {}
 
     bool initialize() {
         HRESULT hr = MFStartup(MF_VERSION);
@@ -41,7 +55,8 @@ public:
         hr = MFCreateAttributes(&pAttributes, 1);
         if (FAILED(hr)) return false;
 
-        hr = pAttributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+        hr = pAttributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+                                  MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
         if (FAILED(hr)) return false;
 
         IMFActivate** ppDevices = nullptr;
@@ -55,20 +70,19 @@ public:
         hr = MFCreateSourceReaderFromMediaSource(pSource_, nullptr, &pSourceReader_);
         if (FAILED(hr)) return false;
 
-        // 🔧 미디어 타입을 YUY2로 명시 설정 (FFmpeg에서 yuyv422와 대응됨)
+        // Media Type 설정: YUY2
         IMFMediaType* pType = nullptr;
         hr = MFCreateMediaType(&pType);
         if (FAILED(hr)) return false;
 
         pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        pType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2);  // YUY2 = yuyv422
+        pType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_YUY2);
         pType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
         MFSetAttributeSize(pType, MF_MT_FRAME_SIZE, config_.width, config_.height);
         MFSetAttributeRatio(pType, MF_MT_FRAME_RATE, config_.fps, 1);
 
         hr = pSourceReader_->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, pType);
         pType->Release();
-
         if (FAILED(hr)) {
             std::cerr << "MediaType 설정 실패\n";
             return false;
@@ -87,9 +101,25 @@ public:
         return true;
     }
 
-    void start(std::chrono::steady_clock::time_point T0) {
+    void start() {
         is_running_ = true;
-        capture_thread_ = std::thread([this, T0]() {
+
+        capture_thread_ = std::thread([this]() {
+            // 동기화 대기
+            {
+                std::unique_lock<std::mutex> lock(*sync_mutex_);
+                sync_cv_->wait(lock, [this]() { return *sync_go_flag_; });
+            }
+
+            auto thread_now = std::chrono::steady_clock::now();
+            auto thread_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                thread_now.time_since_epoch()).count();
+
+            std::cout << "[thread] Camera " << config_.camera_id
+                      << " @ " << (thread_us / 1000000) << "."
+                      << std::setw(6) << std::setfill('0') << (thread_us % 1000000)
+                      << " sec (thread started)\n";
+
             int frame_index = 0;
 
             while (is_running_) {
@@ -100,29 +130,19 @@ public:
                 HRESULT hr = pSourceReader_->ReadSample(
                     MF_SOURCE_READER_FIRST_VIDEO_STREAM,
                     0, &streamIndex, &flags, &sampleTime, &pSample);
-
                 if (FAILED(hr) || !pSample) continue;
 
                 auto rel_us = std::chrono::duration_cast<std::chrono::microseconds>(
                     std::chrono::nanoseconds(sampleTime * 100)).count();
 
                 FrameMeta meta{
-                    frame_index,
+                    frame_index++,
                     static_cast<uint64_t>(sampleTime * 100),
                     rel_us,
                     config_.camera_id
                 };
                 logger_.log(meta);
 
-                // 콘솔 출력 (30프레임마다 한 번)
-                if (frame_index % 30 == 0) {
-                    std::cout << "[Camera " << config_.camera_id << "] frame " << frame_index
-                            << " (timestamp: " << meta.timestamp_ns << " ns)\n";
-                }
-
-                frame_index++;
-
-                // 프레임 버퍼 추출 및 FFmpeg로 전달
                 IMFMediaBuffer* pBuffer = nullptr;
                 BYTE* pData = nullptr;
                 DWORD maxLength = 0, currentLength = 0;
@@ -131,12 +151,7 @@ public:
                 if (SUCCEEDED(hr)) {
                     hr = pBuffer->Lock(&pData, &maxLength, &currentLength);
                     if (SUCCEEDED(hr)) {
-                        bool ok = writer_.write(pData, currentLength);
-                        if (!ok) {
-                            std::cerr << "[Camera " << config_.camera_id << "] FFmpeg 종료 감지 → 루프 종료\n";
-                            is_running_ = false;
-                            break;
-                        }       
+                        writer_.write(pData, currentLength);
                         pBuffer->Unlock();
                     }
                     pBuffer->Release();
@@ -147,22 +162,16 @@ public:
         });
     }
 
-
     void stop() {
         is_running_ = false;
-        if (capture_thread_.joinable())
-            capture_thread_.join();
+        if (capture_thread_.joinable()) capture_thread_.join();
 
-        // 먼저 writer 종료 → 모든 프레임 write 및 ffmpeg 인코딩 완료 대기
         writer_.stop();
 
-        // Media Foundation 자원 해제
         if (pSourceReader_) pSourceReader_->Release();
         if (pSource_) pSource_->Release();
-
-        MFShutdown();  // 🔹 모든 Media Foundation 객체 해제 후 호출
+        MFShutdown();
     }
-
 
 private:
     CaptureConfig config_;
@@ -172,8 +181,11 @@ private:
 
     IMFMediaSource* pSource_;
     IMFSourceReader* pSourceReader_;
-
     FFmpegWriter writer_;
+
+    std::shared_ptr<std::condition_variable> sync_cv_;
+    std::shared_ptr<std::mutex> sync_mutex_;
+    std::shared_ptr<bool> sync_go_flag_;
 };
 
 #endif // CAMERA_DEVICE_HPP
