@@ -1,0 +1,27 @@
+// .vscode/tasks.json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build multicam",
+      "type": "shell",
+      "command": "cl",
+      "args": [
+        "/EHsc",
+        "/std:c++17",
+        "/Iinclude",
+        "/Icapture",
+        "/Iutil",
+        "main.cpp",
+        "/Fe:capture.exe"
+      ],
+      "problemMatcher": [
+        "$msCompile"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    }
+  ]
+}

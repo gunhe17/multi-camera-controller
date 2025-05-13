@@ -24,6 +24,3 @@ output/
 Thumbs.db
 ehthumbs.db
 desktop.ini
-
-# Visual Studio Code
-.vscode/
