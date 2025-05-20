@@ -101,10 +101,10 @@ public:
         return true;
     }
 
-    void start() {
+    void start(const std::chrono::steady_clock::time_point& T0) {
         is_running_ = true;
 
-        capture_thread_ = std::thread([this]() {
+        capture_thread_ = std::thread([this, T0]() {
             // 동기화 대기
             {
                 std::unique_lock<std::mutex> lock(*sync_mutex_);
@@ -121,6 +121,11 @@ public:
                       << " sec (thread started)\n";
 
             int frame_index = 0;
+            LONGLONG first_sample_time = -1;
+
+            auto T0_us = std::chrono::duration_cast<std::chrono::microseconds>(
+                T0.time_since_epoch()
+            ).count();
 
             while (is_running_) {
                 DWORD streamIndex, flags;
@@ -132,8 +137,8 @@ public:
                     0, &streamIndex, &flags, &sampleTime, &pSample);
                 if (FAILED(hr) || !pSample) continue;
 
-                auto rel_us = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::nanoseconds(sampleTime * 100)).count();
+                auto sample_us = sampleTime * 100 / 1000;
+                auto rel_us = sample_us - T0_us;
 
                 FrameMeta meta{
                     frame_index++,

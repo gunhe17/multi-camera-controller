@@ -45,7 +45,7 @@ public:
         T0_ = std::chrono::steady_clock::now();
 
         for (auto& device : devices_) {
-            device->start();
+            device->start(T0_);
         }
 
         {
