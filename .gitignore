@@ -13,9 +13,7 @@ multicam
 # 로그 및 출력 디렉토리
 output/
 *.log
-*.csv
 *.mp4
-*.h264
 
 # macOS 관련
 .DS_Store

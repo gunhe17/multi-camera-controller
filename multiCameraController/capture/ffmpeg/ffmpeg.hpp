@@ -1,41 +1,44 @@
 ﻿#ifndef FFMPEG_WRITER_HPP
 #define FFMPEG_WRITER_HPP
 
-#include "../include/common.hpp"
+#include "config\config.hpp"
 
 #include <windows.h>
 #include <string>
 #include <iostream>
 
+
 class FFmpegWriter {
 public:
-    FFmpegWriter(const CaptureConfig& config)
+    FFmpegWriter(Config config)
         : config_(config), ffmpeg_stdin_(NULL), ffmpeg_proc_(NULL) {}
 
     bool start() {
 
-        std::string command = config_.ffmpeg_path +
+        std::string command = "\"" + config_.ffmpeg_path + "\"" +
             " -loglevel debug -y" + 
             " -f rawvideo -pixel_format yuyv422" +
-            " -video_size " + std::to_string(config_.width) + "x" + std::to_string(config_.height) +
-            " -framerate " + std::to_string(config_.fps) +
-            " -i - -t " + std::to_string(config_.duration_sec) +  // 여기에 -t 추가
-            " -c:v libx264 -preset ultrafast \"" + config_.output_filename + "\"";
+            " -video_size " + std::to_string(config_.frame_width) + 
+            "x" + std::to_string(config_.frame_height) +
+            " -framerate " + std::to_string(config_.frame_rate) +
+            " -i - -t " + std::to_string(config_.duration_time) +
+            " -c:v libx264 -preset ultrafast \"" + config_.output_path + "\"";
 
         SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
         HANDLE writeHandle, readHandle;
 
         if (!CreatePipe(&readHandle, &writeHandle, &sa, 0)) {
-            std::cerr << "파이프 생성 실패\n";
+            std::cout << "파이프 생성 실패\n";
             return false;
         }
+        std::cout << "[FFmpegWriter] 파이프 생성 완료\n";
 
         STARTUPINFOA si = { 0 };
         si.cb = sizeof(STARTUPINFOA);
         si.dwFlags |= STARTF_USESTDHANDLES;
         si.hStdInput = readHandle;
         si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);        
 
         PROCESS_INFORMATION pi = { 0 };
 
@@ -45,13 +48,13 @@ public:
             NULL, NULL, TRUE, 0, NULL, NULL,
             &si, &pi
         );
-
         if (!success) {
-            std::cerr << "FFmpeg 실행 실패\n";
+            std::cout << "FFmpeg 실행 실패, GetLastError(): " << GetLastError() << "\n";
             CloseHandle(readHandle);
             CloseHandle(writeHandle);
             return false;
         }
+        std::cout << "[FFmpegWriter] FFmpeg 프로세스 생성 완료\n";
 
         CloseHandle(readHandle);  // ffmpeg가 읽는 쪽은 닫기
 
@@ -76,7 +79,7 @@ public:
             DWORD result = WaitForSingleObject(ffmpeg_proc_, INFINITE);  // 최대 5초 대기
 
             if (result == WAIT_TIMEOUT) {
-                std::cerr << "[WARN] FFmpeg 종료 타임아웃. 강제 종료합니다.\n";
+                std::cout << "[WARN] FFmpeg 종료 타임아웃. 강제 종료합니다.\n";
                 TerminateProcess(ffmpeg_proc_, 1);
             } else {
                 std::cout << "[FFmpegWriter] FFmpeg 정상 종료 감지됨\n";
@@ -91,7 +94,7 @@ public:
 
 
 private:
-    CaptureConfig config_;
+    Config config_;
     HANDLE ffmpeg_stdin_;
     HANDLE ffmpeg_proc_;
 };
