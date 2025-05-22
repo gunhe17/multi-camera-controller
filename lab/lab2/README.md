@@ -23,7 +23,7 @@ run
 ```
 lab\lab2\bin\media_inspector.exe
 
-lab\lab2\bin\main.exe --camera_index 0 --frame_rate 30 --resolution 720p --pixel_format NV12
+lab\lab2\bin\main.exe --camera_index 0 --frame_rate 30 --resolution 720p --pixel_format MJPG
 ```
 
 
@@ -54,5 +54,18 @@ media_inspector.cpp의 출력 결과를 이용해 장치의 올바른 setting을
 
 ***2nd***
 
-(lab\lab2\bin\main.exe --camera_index 0 --frame_rate 30 --resolution 720p --pixel_format NV12) \
-frameQuene에 push하는 작업을 수행할 때와 생략할 때를 비교해보겠다.
+(lab\lab2\bin\main.exe --camera_index 0 --frame_rate 30 --resolution 720p --pixel_format MJPG) \
+pixel_format의 경우 MJPG를 사용했을 때 프레임의 수집 갯수가 더 많았다.
+
+NV12 - 853
+MJPG - 863
+
+***Issue***:    
+    프레임 속도에 비례해 일정 간격으로 지연이 반복되는 현상이 관찰되었다. 30fps의 경우 약 10f, 10fps의 경우 약 3-4f을 주기로 지연이 반복되는 현상이었다.
+
+    - [ ]  🤔:
+        - [ ]  HW 촬영 장치의 문제인가?
+            - [ ]  Logitech cam → O / 약 10개를 주기로 한다. 총 768개의 frame이 수집된다.
+            - [ ]  LG gram cam → O / 약 12개를 주기로 한다. 총 897개의 frame이 수집된다.
+            
+            → 촬영 기기의 성능이 영향을 미치는 걸까? 대역폭의 문제일까?

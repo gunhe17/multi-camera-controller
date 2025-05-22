@@ -6,12 +6,13 @@
 #include <functional>
 #include <mfapi.h>
 
+
 struct Config {
     int camera_index = 0;
     int frame_width = 1280;
     int frame_height = 720;
     int frame_rate = 30;
-    int duration_time = 10;
+    GUID pixel_format = MFVideoFormat_NV12;
 };
 
 Config parse_args(int argc, char* argv[]) {
@@ -20,7 +21,6 @@ Config parse_args(int argc, char* argv[]) {
     std::unordered_map<std::string, std::function<void(const std::string&)>> handlers = {
         { "--camera_index", [&](const std::string& v) { config.camera_index = std::stoi(v); } },
         { "--frame_rate",   [&](const std::string& v) { config.frame_rate = std::stoi(v); } },
-        { "--duration_time",  [&](const std::string& v) { config.duration_time = std::stoi(v); } },
         { "--resolution", [&](const std::string& v) {
             if (v == "720p") {
                 config.frame_width = 1280;
@@ -34,6 +34,16 @@ Config parse_args(int argc, char* argv[]) {
             } else {
                 std::cout << "[Warning] 지원하지 않는 해상도: " << v << "\n";
                 std::cout << "          사용 가능한 해상도: 720p, 1080p, 4k\n";
+            }
+        }},
+        { "--pixel_format", [&](const std::string& v) { 
+            if (v == "NV12") {
+                config.pixel_format = MFVideoFormat_NV12;
+            } else if (v == "MJPG") {
+                config.pixel_format = MFVideoFormat_MJPG;
+            } else {
+                std::cout << "[Warning] 지원하지 않는 형식: " << v << "\n";
+                std::cout << "          사용 가능한 해상도: NV12, YUY2\n";
             }
         }}
     };
