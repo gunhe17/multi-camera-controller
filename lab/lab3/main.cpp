@@ -1,7 +1,10 @@
 ﻿#pragma once
 
 // Standard Library
+#include <array>
 #include <algorithm>
+#include <atomic>
+#include <cstddef>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -28,6 +31,10 @@
 
 // Project
 #include "config.hpp"
+
+// using
+using namespace Microsoft::WRL;
+using Microsoft::WRL::ComPtr;
 
 
 /**
@@ -61,45 +68,64 @@ inline bool CFailed(HRESULT hr, const char* message) {
 
 
 /**
- * Helper: FrameQueue
+ * Helper: SPSCRingBuffer
  */
-using Microsoft::WRL::ComPtr;
-
-class FrameQueue {
-public:
-    void push(ComPtr<IMFSample> sample) {
-        std::lock_guard<std::mutex> lock(mutex_);
-        queue_.push(sample);
-    }
-
-    ComPtr<IMFSample> pop() {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (queue_.empty()) return nullptr;
-
-        ComPtr<IMFSample> sample = queue_.front();
-        queue_.pop();
-        return sample;
-    }
+template <typename T, std::size_t N>
+class SPSCRingBuffer {
 private:
-    std::queue<ComPtr<IMFSample>> queue_;
-    mutable std::mutex mutex_;
+    std::atomic<std::size_t> m_head;
+    std::array<T, N> m_buff;
+    std::atomic<std::size_t> m_tail;
+
+public:
+    constexpr SPSCRingBuffer() noexcept : m_head(0), m_tail(0) {}
+
+    constexpr std::size_t size() noexcept { return N; }
+
+    bool enqueue(T val) noexcept {
+        std::size_t current_tail = m_tail.load(std::memory_order_relaxed);
+        if (current_tail - m_head.load(std::memory_order_relaxed) < N) {
+            m_buff[current_tail % N] = std::move(val);
+            m_tail.store(current_tail + 1, std::memory_order_release);
+            return true;
+        }
+        return false;
+    }
+
+    std::optional<T> dequeue() noexcept {
+        std::size_t current_tail = m_tail.load(std::memory_order_acquire);
+        std::size_t current_head = m_head.load(std::memory_order_relaxed);
+
+        if (current_head != current_tail) {
+            auto value = std::move(m_buff[current_head % N]);
+            m_head.store(current_head + 1, std::memory_order_relaxed);
+            return std::optional(std::move(value));
+        }
+        return std::nullopt;
+    }
+
+    void debug_print_tail() {
+        std::cout << "tail: " << m_tail.load(std::memory_order_relaxed) << std::endl;
+    }
+
+    void debug_print_head() {
+        std::cout << "head: " << m_head.load(std::memory_order_relaxed) << std::endl;
+    }
 };
 
 
 /**
  *  Helper: Callback
  */
-using namespace Microsoft::WRL;
-
 class SampleCallback : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFSourceReaderCallback> {
 public:
     // common
     STDMETHODIMP OnReadSample(HRESULT hrStatus, DWORD streamIndex, DWORD flags, LONGLONG llTimestamp, IMFSample* sample) override {
         std::cout << "[Info] 수신 타임스탬프 (llTimestamp): " << llTimestamp << " (100ns 단위)\n";
 
-        if (frameQueue_ && sample) {
-            frameQueue_->push(sample);
-            frameQueue_->pop();
+        if (ringBuffer_ && sample) {
+            ringBuffer_->enqueue(sample);
+            ringBuffer_->dequeue();
         }
 
         if (reader_) {
@@ -116,24 +142,22 @@ public:
         reader_ = reader;
     }
 
-    void setFrameQueue(FrameQueue* queue) {
-        frameQueue_ = queue;
+    void setSPSCRingBuffer(SPSCRingBuffer<ComPtr<IMFSample>, 1024>* ringBuffer) {
+        ringBuffer_ = ringBuffer;
     }
 
 private:
     IMFSourceReader* reader_ = nullptr;
-    FrameQueue* frameQueue_ = nullptr;
+    SPSCRingBuffer<ComPtr<IMFSample>, 1024>* ringBuffer_ = nullptr;
 };
 
 
 /**
  *  Helper: MediaFoundation
  */
-using Microsoft::WRL::ComPtr;
-
 class MediaFoundation {
 public:
-    // common
+    // initial
     MediaFoundation() {
         HRESULT hr = MFStartup(MF_VERSION);
 
@@ -202,10 +226,14 @@ public:
         return device;
     }
 
-    std::optional<ComPtr<SampleCallback>> getCallback(FrameQueue& frameQueue) {
+    SPSCRingBuffer<ComPtr<IMFSample>, 1024> getRingBuffer() {
+        return SPSCRingBuffer<ComPtr<IMFSample>, 1024>();
+    }
+
+    std::optional<ComPtr<SampleCallback>> getCallback(SPSCRingBuffer<ComPtr<IMFSample>, 1024>& ringBuffer) {
         auto callback = Microsoft::WRL::Make<SampleCallback>();
 
-        callback->setFrameQueue(&frameQueue);
+        callback->setSPSCRingBuffer(&ringBuffer);
 
         return callback;
     }
@@ -290,11 +318,11 @@ int main(int argc, char* argv[]) {
     std::cout << "[Info] 카메라를 찾았습니다.\n";
 
     // get Queue
-    auto frameQueue = FrameQueue();
-    std::cout << "[Info] FrameQueue를 생성했습니다.\n";
+    auto ringBuffer = mf.getRingBuffer();
+    std::cout << "[Info] SPSCRingBuffer를 생성했습니다.\n";
 
     // get callback
-    auto callback = mf.getCallback(frameQueue);
+    auto callback = mf.getCallback(ringBuffer);
     if (!callback) {
         std::cout << "[Error] IMFSourceReaderCallback을 생성할 수 없습니다.\n";
         return -1;

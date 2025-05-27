@@ -54,7 +54,7 @@ int main() {
         return -1;
     }
     
-    fs::path output_path = fs::current_path() / "lab" / "lab2" /  "result" / "media_inspector.txt";
+    fs::path output_path = fs::current_path() / "lab" / "lab1" /  "result" / "4th_result.txt";
     fs::create_directories(output_path.parent_path());
     std::wofstream out(output_path);
     out.imbue(std::locale(""));  // 유니코드 출력 (윈도우용)

@@ -16,23 +16,24 @@ build
 ```sql
 cmd.exe /k "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
 
-cl /EHsc /std:c++17 /Iinclude /Icapture /Iutil lab\lab3\main.cpp /Fe:lab\lab3\main.exe ^
-    mfplat.lib mf.lib mfreadwrite.lib mfuuid.lib
+cl /EHsc /std:c++17 /Iinclude /Icapture /Iutil lab\lab3\main.cpp /Fe:lab\lab3\bin\main.exe mfplat.lib mf.lib mfreadwrite.lib mfuuid.lib propsys.lib ole32.lib
 ```
 
 run
 ```
-lab\lab3\main.exe --camera_index 0 --frame_rate 30 --resolution 720p --pixel_format MJPG
+lab\lab3\bin\main.exe --camera_index 0 --frame_rate 30 --resolution 720p --pixel_format MJPG
 ```
 
 ### 결과
 
 ***1st***
 
+| 구성             | 수신 프레임 수 | 기존 프레임 수 |
+| --------------- | -------- | -------- |
+| PC + Logitech   | 862~1    | 863      |
+| LG + Logitech   | 845      | X        |
+| LG + inner cam. | 896      | 897      |
 
+Queue 도입 이후 프레임 수신은 환경과 관계없이 거의 완벽하게 작동하며, 첫 프레임 유실 외에는 프레임 드롭이 없는 안정적인 구조로 판단된다.
 
-
-***2nd***
-
-(lab\lab3\main.exe --camera_index 0 --frame_rate 30 --resolution 720p --pixel_format YUY2) \
-frameQuene에 push하는 작업을 수행할 때와 생략할 때를 비교해보겠다.
++LG의 inner cam과 logitech의 cam은 어떤 사양이 상이한 결과로 촬영 결과물이 크게 차이나는지에 대한 조사가 필요하다.
