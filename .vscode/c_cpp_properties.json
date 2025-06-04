@@ -4,7 +4,7 @@
             "name": "Win32",
             "includePath": [
                 "${workspaceFolder}/multiCameraController",
-                "${workspaceFolder}/**"
+                "C:/Users/user/Workspace/ETW/EtwEnumerator/include"
             ],
             "defines": [
                 "_DEBUG",

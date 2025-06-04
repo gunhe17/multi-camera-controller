@@ -12,10 +12,8 @@ struct Config {
     int frame_width = 1280;
     int frame_height = 720;
     int frame_rate = 30;
-    int duration = 10;
     GUID pixel_format = MFVideoFormat_MJPG;
-    std::string ffmpeg = "ffmpeg";
-    std::string output = "output.avi";
+    int duration = 2;
 };
 
 Config parse_args(int argc, char* argv[]) {
@@ -48,7 +46,17 @@ Config parse_args(int argc, char* argv[]) {
                 std::cout << "[Warning] 지원하지 않는 형식: " << v << "\n";
                 std::cout << "          사용 가능한 해상도: NV12, YUY2\n";
             }
-        }}
+        }},
+        { "--duration", [&](const std::string& v) { 
+            try {
+                config.duration = std::stoi(v);
+                if (config.duration <= 0) {
+                    throw std::invalid_argument("지속 시간은 양수여야 합니다.");
+                }
+            } catch (const std::exception& e) {
+                std::cout << "[Error] 지속 시간 파싱 실패: " << e.what() << "\n";
+            }
+        }},
     };
 
     for (int i = 1; i < argc; i += 2) {

@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<provider name="Microsoft-Windows-USB-UCX" guid="36da592d-e43a-4e28-af6f-4bc57c5a11e8" helpLink="https://go.microsoft.com/fwlink/events.asp?CoName=Microsoft%20Corporation&amp;ProdName=Microsoft%c2%ae%20Windows%c2%ae%20Operating%20System&amp;ProdVer=10.0.19041.1&amp;FileName=ucx01000.sys&amp;FileVer=10.0.19041.1" resourceFileName="C:\WINDOWS\system32\drivers\ucx01000.sys" messageFileName="C:\WINDOWS\system32\drivers\ucx01000.sys" message="" xmlns="http://schemas.microsoft.com/win/2004/08/events">
+  <channels>
+    <channel name="Microsoft-Windows-USB-UCX-Analytic" id="16" flags="0" message="2415919105">
+    </channel>
+  </channels>
+  <levels>
+    <level name="win:Informational" value="4" message="1342177284">
+    </level>
+  </levels>
+  <opcodes>
+    <opcode name="win:Start" value="65536" message="805306369">
+    </opcode>
+    <opcode name="win:Stop" value="131072" message="805306370">
+    </opcode>
+    <opcode name="START" value="655360" message="805306378">
+    </opcode>
+    <opcode name="COMPLETE" value="720896" message="805306379">
+    </opcode>
+    <opcode name="INFORMATION" value="786432" message="805306380">
+    </opcode>
+  </opcodes>
+  <tasks>
+    <task name="UCX_RUNDOWN" value="1" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048193">
+    </task>
+    <task name="UCX_CONTROLLER_RUNDOWN" value="2" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048194">
+    </task>
+    <task name="UCX_ROOTHUB_RUNDOWN" value="3" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048195">
+    </task>
+    <task name="UCX_DEVICE_RUNDOWN" value="4" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048196">
+    </task>
+    <task name="UCX_ENDPOINT_RUNDOWN" value="5" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048197">
+    </task>
+    <task name="UCX_STATIC_STREAM_RUNDOWN" value="6" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048198">
+    </task>
+    <task name="UCX_CONTROLLER_CREATE" value="7" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048199">
+    </task>
+    <task name="UCX_CONTROLLER_DELETE" value="8" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048200">
+    </task>
+    <task name="UCX_ROOTHUB_CREATE" value="9" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048201">
+    </task>
+    <task name="UCX_ROOTHUB_DELETE" value="10" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048202">
+    </task>
+    <task name="UCX_ROOTHUB_PREPARE" value="11" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048203">
+    </task>
+    <task name="UCX_ROOTHUB_RELEASE" value="12" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048204">
+    </task>
+    <task name="UCX_DEVICE_CREATE" value="13" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048205">
+    </task>
+    <task name="UCX_DEVICE_DELETE" value="14" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048206">
+    </task>
+    <task name="UCX_ENDPOINT_CREATE" value="15" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048207">
+    </task>
+    <task name="UCX_ENDPOINT_DELETE" value="16" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048208">
+    </task>
+    <task name="UCX_STATIC_STREAM_CREATE" value="17" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048209">
+    </task>
+    <task name="UCX_STATIC_STREAM_DELETE" value="18" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048210">
+    </task>
+    <task name="UCX_URB_FUNCTION_CONTROL_TRANSFER" value="19" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048211">
+    </task>
+    <task name="UCX_URB_FUNCTION_CONTROL_TRANSFER_EX" value="20" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048212">
+    </task>
+    <task name="UCX_URB_FUNCTION_BULK_OR_INTERRUPT_TRANSFER" value="21" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048213">
+    </task>
+    <task name="UCX_URB_FUNCTION_ISOCH_TRANSFER" value="22" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048214">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_DESCRIPTOR_FROM_DEVICE" value="23" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048215">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_DESCRIPTOR_FROM_INTERFACE" value="24" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048216">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_DESCRIPTOR_FROM_ENDPOINT" value="25" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048217">
+    </task>
+    <task name="UCX_URB_FUNCTION_SET_DESCRIPTOR_TO_DEVICE" value="26" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048218">
+    </task>
+    <task name="UCX_URB_FUNCTION_SET_DESCRIPTOR_TO_INTERFACE" value="27" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048219">
+    </task>
+    <task name="UCX_URB_FUNCTION_SET_DESCRIPTOR_TO_ENDPOINT" value="28" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048220">
+    </task>
+    <task name="UCX_URB_FUNCTION_SET_FEATURE_TO_DEVICE" value="29" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048221">
+    </task>
+    <task name="UCX_URB_FUNCTION_SET_FEATURE_TO_INTERFACE" value="30" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048222">
+    </task>
+    <task name="UCX_URB_FUNCTION_SET_FEATURE_TO_ENDPOINT" value="31" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048223">
+    </task>
+    <task name="UCX_URB_FUNCTION_SET_FEATURE_TO_OTHER" value="32" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048224">
+    </task>
+    <task name="UCX_URB_FUNCTION_CLEAR_FEATURE_TO_DEVICE" value="33" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048225">
+    </task>
+    <task name="UCX_URB_FUNCTION_CLEAR_FEATURE_TO_INTERFACE" value="34" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048226">
+    </task>
+    <task name="UCX_URB_FUNCTION_CLEAR_FEATURE_TO_ENDPOINT" value="35" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048227">
+    </task>
+    <task name="UCX_URB_FUNCTION_CLEAR_FEATURE_TO_OTHER" value="36" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048228">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_STATUS_FROM_DEVICE" value="37" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048229">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_STATUS_FROM_INTERFACE" value="38" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048230">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_STATUS_FROM_ENDPOINT" value="39" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048231">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_STATUS_FROM_OTHER" value="40" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048232">
+    </task>
+    <task name="UCX_URB_FUNCTION_CLASS_DEVICE" value="41" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048233">
+    </task>
+    <task name="UCX_URB_FUNCTION_CLASS_INTERFACE" value="42" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048234">
+    </task>
+    <task name="UCX_URB_FUNCTION_CLASS_ENDPOINT" value="43" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048235">
+    </task>
+    <task name="UCX_URB_FUNCTION_CLASS_OTHER" value="44" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048236">
+    </task>
+    <task name="UCX_URB_FUNCTION_VENDOR_DEVICE" value="45" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048237">
+    </task>
+    <task name="UCX_URB_FUNCTION_VENDOR_INTERFACE" value="46" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048238">
+    </task>
+    <task name="UCX_URB_FUNCTION_VENDOR_ENDPOINT" value="47" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048239">
+    </task>
+    <task name="UCX_URB_FUNCTION_VENDOR_OTHER" value="48" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048240">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_CONFIGURATION" value="49" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048241">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_INTERFACE" value="50" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048242">
+    </task>
+    <task name="UCX_URB_FUNCTION_GET_MS_FEATURE_DESCRIPTOR" value="51" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048243">
+    </task>
+    <task name="UCX_ENDPOINT_STATE_MACHINE_TRANSITION" value="52" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048244">
+    </task>
+    <task name="UCX_ENDPOINT_STATE_MACHINE_EVENT" value="53" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048245">
+    </task>
+    <task name="UCX_CONTROLLER_STATE_MACHINE_TRANSITION" value="54" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048246">
+    </task>
+    <task name="UCX_CONTROLLER_STATE_MACHINE_EVENT" value="55" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048247">
+    </task>
+    <task name="UCX_ROOTHUB_INITIATING_WAKE" value="56" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048248">
+    </task>
+    <task name="UCX_URB_FUNCTION_SECURE_BULK_OR_INTERRUPT_TRANSFER" value="57" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048249">
+    </task>
+    <task name="UCX_URB_FUNCTION_SECURE_ISOCH_TRANSFER" value="58" eventGUID="00000000-0000-0000-0000-000000000000" message="1879048250">
+    </task>
+  </tasks>
+  <keywords>
+    <keyword name="Default" mask="1" message="">
+    </keyword>
+    <keyword name="USBError" mask="2" message="">
+    </keyword>
+    <keyword name="IRP" mask="4" message="">
+    </keyword>
+    <keyword name="Power" mask="8" message="">
+    </keyword>
+    <keyword name="PnP" mask="10" message="">
+    </keyword>
+    <keyword name="Performance" mask="20" message="">
+    </keyword>
+    <keyword name="HeadersBusTrace" mask="40" message="">
+    </keyword>
+    <keyword name="PartialDataBusTrace" mask="80" message="">
+    </keyword>
+    <keyword name="FullDataBusTrace" mask="100" message="">
+    </keyword>
+    <keyword name="StateMachine" mask="200" message="">
+    </keyword>
+    <keyword name="Enumeration" mask="400" message="">
+    </keyword>
+    <keyword name="VerifyDriver" mask="800" message="">
+    </keyword>
+    <keyword name="HWVerifyHost" mask="1000" message="">
+    </keyword>
+    <keyword name="HWVerifyHub" mask="2000" message="">
+    </keyword>
+    <keyword name="HWVerifyDevice" mask="4000" message="">
+    </keyword>
+    <keyword name="Rundown" mask="8000" message="">
+    </keyword>
+    <keyword name="Device" mask="10000" message="">
+    </keyword>
+    <keyword name="Hub" mask="20000" message="">
+    </keyword>
+    <keyword name="Compat" mask="40000" message="">
+    </keyword>
+    <keyword name="ControllerCommand" mask="80000" message="">
+    </keyword>
+  </keywords>
+</provider>

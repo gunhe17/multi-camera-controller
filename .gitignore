@@ -14,6 +14,8 @@ multicam
 output/
 *.log
 *.mp4
+*.avi
+*.csv
 
 # macOS 관련
 .DS_Store

@@ -78,6 +78,7 @@
         "future": "cpp",
         "complex": "cpp",
         "random": "cpp",
-        "array": "cpp"
+        "array": "cpp",
+        "cassert": "cpp"
     }
 }

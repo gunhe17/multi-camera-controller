@@ -15,6 +15,7 @@ dir capture.exe
 ### to run
 
 (remote ssh)
+shutdown /r /t 0
 
 ffmpeg path: C:\ffmpeg\bin\ffmpeg.exe
 
