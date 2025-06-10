@@ -16,6 +16,9 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <memory>
+#include <condition_variable>
+#include <iomanip>
 
 // Windows
 #include <comdef.h>
@@ -30,160 +33,67 @@
 #include <mferror.h>
 
 // Project
+#include "error/error.hpp"
 #include "config.hpp"
 
 // using
 using namespace Microsoft::WRL;
 using Microsoft::WRL::ComPtr;
 
-
 /**
- *  Helper: Error Check
+ * Helper
  */
-inline bool HFailed(HRESULT hr, const char* message) {
-    if (FAILED(hr)) {
-        std::ostringstream oss;
-        oss << "[Error] " << message << " failed: 0x" << std::hex << hr << "\n";
-        
-        std::cout << oss.str();
-        std::cout << oss.str();
-        
-        return true;
-    }
-    return false;
-}
+constexpr std::size_t RING_BUFFER_SIZE = 1024;
 
-inline bool CFailed(HRESULT hr, const char* message) {
-    if (FAILED(hr)) {
-        std::ostringstream oss;
-        oss << "[Error] " << message << " failed: 0x" << std::hex << hr << "\n";
-        
-        std::cout << oss.str();
-        std::cout << oss.str();
-        
-        return true;
-    }
-    return false;
-}
-
-
-
-/*******************
- * 
- *      FFmpeg
- * 
- *******************/
-
-/**
- * Class: FFmpeg
- */
-class FFmpeg {
+class CoTaskMemDeleter {
 public:
-    bool start() {
-        SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
-        HANDLE readHandle = NULL, writeHandle = NULL;
-
-        if (!CreatePipe(&readHandle, &writeHandle, &sa, 0)) {
-            std::cerr << "[FFmpeg] 파이프 생성 실패\n";
-            return false;
+    template<typename T>
+    void operator()(T* ptr) const {
+        if (ptr) {
+            CoTaskMemFree(ptr);
         }
+    }
+};
 
-        STARTUPINFOA si = { 0 };
-        si.cb = sizeof(STARTUPINFOA);
-        si.dwFlags |= STARTF_USESTDHANDLES;
-        si.hStdInput = readHandle;
-        si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+template<typename T>
+using CoTaskMemPtr = std::unique_ptr<T, CoTaskMemDeleter>;
 
 
-        PROCESS_INFORMATION pi = { 0 };
+// C++17 compatible barrier implementation
+class Barrier {
+public:
+    explicit Barrier(std::size_t count) : count_(count), waiting_(0), generation_(0) {}
+
+    void arrive_and_wait() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        std::size_t current_generation = generation_;
         
-        std::string command = buildCommand();
-        BOOL success = CreateProcessA(
-            NULL,
-            const_cast<LPSTR>(command.c_str()),
-            NULL, NULL, TRUE, 0, NULL, NULL,
-            &si, &pi
-        );
-        if (!success) {
-            std::cerr << "FFmpeg 실행 실패\n";
-            CloseHandle(readHandle);
-            CloseHandle(writeHandle);
-            return false;
-        }
-
-        CloseHandle(readHandle);  // FFmpeg가 사용하는 읽기 핸들 닫기
-
-        ffmpeg_proc_ = pi.hProcess;
-        ffmpeg_stdin_ = writeHandle;
+        ++waiting_;
         
-        CloseHandle(pi.hThread);  // 쓰레드 핸들은 사용하지 않음
-        return true;
-    }
-
-    bool write(const BYTE* data, size_t length) {
-        if (!ffmpeg_stdin_) return false;
-
-        DWORD written = 0;
-        return WriteFile(ffmpeg_stdin_, data, static_cast<DWORD>(length), &written, NULL);
-    }
-
-    void stop() {
-        std::cout << "[FFmpeg] 종료 시도 중...\n";
-
-        if (ffmpeg_stdin_) {
-            std::cout << "[FFmpeg] stdin 파이프 닫는 중...\n";
-            CloseHandle(ffmpeg_stdin_);
-            ffmpeg_stdin_ = NULL;
-            std::cout << "[FFmpeg] stdin 파이프 닫힘\n";
+        if (waiting_ == count_) {
+            // Last thread arrives
+            waiting_ = 0;
+            ++generation_;
+            cv_.notify_all();
         } else {
-            std::cout << "[FFmpeg] stdin 파이프는 이미 닫혀 있음\n";
+            // Wait for all threads
+            cv_.wait(lock, [this, current_generation] {
+                return generation_ != current_generation;
+            });
         }
-
-        if (ffmpeg_proc_) {
-            std::cout << "[FFmpeg] FFmpeg 프로세스 종료 대기 중...\n";
-            DWORD result = WaitForSingleObject(ffmpeg_proc_, INFINITE);
-            std::cout << "[FFmpeg] FFmpeg 프로세스 종료 감지 중 ...\n";
-
-            if (result == WAIT_OBJECT_0) {
-                std::cout << "[FFmpeg] FFmpeg 프로세스 종료 감지됨\n";
-            } else {
-                std::cerr << "[FFmpeg] FFmpeg 프로세스 종료 대기 실패 (코드: " << result << ")\n";
-            }
-
-            CloseHandle(ffmpeg_proc_);
-            ffmpeg_proc_ = NULL;
-            std::cout << "[FFmpeg] FFmpeg 프로세스 핸들 닫힘\n";
-        } else {
-            std::cout << "[FFmpeg] FFmpeg 프로세스 핸들은 이미 닫혀 있음\n";
-        }
-
-        std::cout << "[FFmpeg] 종료 완료\n";
-    }
-
-    // helper
-    void setConfig(const Config& config) {
-        config_ = config;
     }
 
 private:
-    std::string FFmpeg::buildCommand() const {
-        return config_.ffmpeg +
-            " -loglevel verbose -report -y" +
-            " -f mjpeg" +
-            " -framerate " + std::to_string(config_.frame_rate) +
-            " -i -" +
-            " -c:v copy" +
-            " \"" + config_.output + "\"";
-    }
-    Config config_;
-    HANDLE ffmpeg_stdin_ = NULL;
-    HANDLE ffmpeg_proc_ = NULL;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    std::size_t count_;
+    std::size_t waiting_;
+    std::size_t generation_;
 };
 
 
 /**
- * Helper: SPSCRingBuffer
+ * Enhanced SPSCRingBuffer
  */
 template <typename T, std::size_t N>
 class SPSCRingBuffer {
@@ -195,11 +105,23 @@ private:
 public:
     constexpr SPSCRingBuffer() noexcept : m_head(0), m_tail(0) {}
 
-    constexpr std::size_t size() noexcept { return N; }
+    constexpr std::size_t capacity() const noexcept { return N; }
+    
+    std::size_t size() const noexcept {
+        return m_tail.load(std::memory_order_acquire) - m_head.load(std::memory_order_acquire);
+    }
+    
+    bool empty() const noexcept {
+        return m_head.load(std::memory_order_acquire) == m_tail.load(std::memory_order_acquire);
+    }
+    
+    bool full() const noexcept {
+        return size() >= N;
+    }
 
     bool enqueue(T val) noexcept {
         std::size_t current_tail = m_tail.load(std::memory_order_relaxed);
-        if (current_tail - m_head.load(std::memory_order_relaxed) < N) {
+        if (current_tail - m_head.load(std::memory_order_acquire) < N) {
             m_buff[current_tail % N] = std::move(val);
             m_tail.store(current_tail + 1, std::memory_order_release);
             return true;
@@ -213,316 +135,827 @@ public:
 
         if (current_head != current_tail) {
             auto value = std::move(m_buff[current_head % N]);
-            m_head.store(current_head + 1, std::memory_order_relaxed);
-            return std::optional(std::move(value));
+            m_head.store(current_head + 1, std::memory_order_release);
+            return std::optional<T>(std::move(value));
         }
         return std::nullopt;
     }
 
-    void debug_print_tail() {
-        std::cout << "tail: " << m_tail.load(std::memory_order_relaxed) << std::endl;
+    template<typename Func>
+    std::size_t drainAll(Func&& processor) {
+        std::size_t processed = 0;
+        while (auto item = dequeue()) {
+            processor(std::move(*item));
+            ++processed;
+        }
+        return processed;
     }
 
-    void debug_print_head() {
-        std::cout << "head: " << m_head.load(std::memory_order_relaxed) << std::endl;
+    struct Stats {
+        std::size_t head;
+        std::size_t tail;
+        std::size_t size;
+        double usage_ratio;
+    };
+    
+    Stats getStats() const noexcept {
+        std::size_t head = m_head.load(std::memory_order_acquire);
+        std::size_t tail = m_tail.load(std::memory_order_acquire);
+        std::size_t current_size = tail - head;
+        
+        return Stats{
+            head,
+            tail,
+            current_size,
+            static_cast<double>(current_size) / N
+        };
+    }
+    
+    void printStats(const std::string& name = "") const {
+        auto stats = getStats();
+        std::cout << "[RingBuffer" << (name.empty() ? "" : " " + name) << "] "
+                  << "head: " << stats.head 
+                  << ", tail: " << stats.tail
+                  << ", size: " << stats.size << "/" << N
+                  << " (" << std::fixed << std::setprecision(1) 
+                  << stats.usage_ratio * 100 << "%)\n";
     }
 };
 
 
 /**
- *  Helper: Callback
+ * Refactored FFmpeg Class
+ */
+class FFmpeg {
+public:
+    enum class State {
+        STOPPED,
+        STARTING,
+        RUNNING,
+        STOPPING
+    };
+
+    FFmpeg() = default;
+    ~FFmpeg() { stop(); }
+
+    void setConfig(const Config& config) { 
+        if (state_ == State::STOPPED) {
+            config_ = config; 
+        }
+    }
+
+    bool start() {
+        if (state_ != State::STOPPED) return false;
+        
+        state_ = State::STARTING;
+        
+        if (createPipe() && startProcess()) {
+            state_ = State::RUNNING;
+            return true;
+        }
+        
+        state_ = State::STOPPED;
+        return false;
+    }
+
+    bool write(const BYTE* data, size_t length) {
+        if (state_ != State::RUNNING || !ffmpeg_stdin_) {
+            return false;
+        }
+
+        DWORD written = 0;
+        BOOL result = WriteFile(ffmpeg_stdin_, data, static_cast<DWORD>(length), &written, NULL);
+        
+        if (!result) {
+            std::cerr << "[FFmpeg] Write 실패, 상태를 STOPPING으로 변경\n";
+            state_ = State::STOPPING;
+        }
+        
+        return result;
+    }
+
+    void stop() {
+        if (state_ == State::STOPPED) return;
+        
+        state_ = State::STOPPING;
+        
+        sendQuitCommand();
+        waitForProcessTermination();
+        cleanup();
+        
+        state_ = State::STOPPED;
+    }
+
+    State getState() const { return state_; }
+    bool isRunning() const { return state_ == State::RUNNING; }
+
+private:
+    Config config_;
+    HANDLE ffmpeg_stdin_ = NULL;
+    HANDLE ffmpeg_proc_ = NULL;
+    HANDLE read_handle_ = NULL;
+    std::atomic<State> state_{State::STOPPED};
+
+    bool createPipe() {
+        SECURITY_ATTRIBUTES sa = { sizeof(SECURITY_ATTRIBUTES), NULL, TRUE };
+        HANDLE readHandle = NULL, writeHandle = NULL;
+
+        if (!CreatePipe(&readHandle, &writeHandle, &sa, 0)) {
+            std::cerr << "[FFmpeg] 파이프 생성 실패\n";
+            return false;
+        }
+
+        read_handle_ = readHandle;
+        ffmpeg_stdin_ = writeHandle;
+        return true;
+    }
+
+    bool startProcess() {
+        STARTUPINFOA si = { 0 };
+        si.cb = sizeof(STARTUPINFOA);
+        si.dwFlags |= STARTF_USESTDHANDLES;
+        si.hStdInput = read_handle_;
+        si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+        si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+
+        PROCESS_INFORMATION pi = { 0 };
+        
+        std::string command = buildCommand();
+        BOOL success = CreateProcessA(
+            NULL, const_cast<LPSTR>(command.c_str()),
+            NULL, NULL, TRUE, 0, NULL, NULL,
+            &si, &pi
+        );
+
+        if (success) {
+            ffmpeg_proc_ = pi.hProcess;
+            CloseHandle(pi.hThread);
+            CloseHandle(read_handle_);
+            read_handle_ = NULL;
+            return true;
+        }
+
+        return false;
+    }
+
+    void sendQuitCommand() {
+        if (ffmpeg_stdin_) {
+            const char quit_cmd = 'q';
+            DWORD written = 0;
+            WriteFile(ffmpeg_stdin_, &quit_cmd, 1, &written, NULL);
+        }
+    }
+
+    void waitForProcessTermination() {
+        if (ffmpeg_proc_) {
+            DWORD result = WaitForSingleObject(ffmpeg_proc_, 3000);
+            
+            if (result == WAIT_TIMEOUT) {
+                std::cout << "[FFmpeg] 타임아웃, 강제 종료\n";
+                TerminateProcess(ffmpeg_proc_, 1);
+                WaitForSingleObject(ffmpeg_proc_, 2000);
+            }
+        }
+    }
+
+    void cleanup() {
+        if (ffmpeg_stdin_) {
+            CloseHandle(ffmpeg_stdin_);
+            ffmpeg_stdin_ = NULL;
+        }
+        if (ffmpeg_proc_) {
+            CloseHandle(ffmpeg_proc_);
+            ffmpeg_proc_ = NULL;
+        }
+        if (read_handle_) {
+            CloseHandle(read_handle_);
+            read_handle_ = NULL;
+        }
+    }
+
+    std::string buildCommand() const {
+        return config_.ffmpeg +
+            " -loglevel verbose -y" +
+            " -f mjpeg" +
+            " -framerate " + std::to_string(config_.frame_rate) +
+            " -i -" +
+            " -c:v copy" +
+            " -f avi" +
+            " -avoid_negative_ts make_zero" +
+            " \"" + config_.output + "\"";
+    }
+};
+
+
+/**
+ * Refactored SampleCallback
  */
 class SampleCallback : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFSourceReaderCallback> {
 public:
-    // common
-    STDMETHODIMP OnReadSample(HRESULT hrStatus, DWORD streamIndex, DWORD flags, LONGLONG llTimestamp, IMFSample* sample) override {
-        std::cout << "[Info] 수신 타임스탬프 (llTimestamp): " << llTimestamp << " (100ns 단위)\n";
+    SampleCallback(SPSCRingBuffer<ComPtr<IMFSample>, RING_BUFFER_SIZE>* ringBuffer,
+                   std::atomic<bool>* runningFlag)
+        : ringBuffer_(ringBuffer), external_running_flag_(runningFlag) {}
+
+    STDMETHODIMP OnReadSample(HRESULT hrStatus, DWORD streamIndex, DWORD flags, 
+                             LONGLONG llTimestamp, IMFSample* sample) override {
+        frameCount_++;
+        
+        logTimestamp(llTimestamp);
+        
+        if (!isRunning()) {
+            std::cout << "[Callback] 종료 상태 감지, ReadSample 중지\n";
+            return S_OK;
+        }
 
         if (ringBuffer_ && sample) {
             ringBuffer_->enqueue(sample);
         }
 
-        if (external_running_flag_ && !(*external_running_flag_)) {
-            std::cout << "[Callback] 종료 상태 감지, ReadSample 중지\n";
-            return S_OK;
-        }
-
-        if (reader_) {
-            reader_->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, nullptr, nullptr, nullptr);
-        }
-
+        requestNextFrame();
+        
         return S_OK;
     }
+
     STDMETHODIMP OnEvent(DWORD, IMFMediaEvent*) override { return S_OK; }
     STDMETHODIMP OnFlush(DWORD) override { return S_OK; }
 
-    // helper
-    void setReader(IMFSourceReader* reader) {
-        reader_ = reader;
-    }
-
-    void setSPSCRingBuffer(SPSCRingBuffer<ComPtr<IMFSample>, 1024>* ringBuffer) {
-        ringBuffer_ = ringBuffer;
-    }
-
-    void setFFmpeg(FFmpeg* ffmpeg) {
-        ffmpeg_ = ffmpeg;
-    }
-
-    void setRunningFlag(std::atomic<bool>* flag) {
-        external_running_flag_ = flag;
+    void setReader(IMFSourceReader* reader) { reader_ = reader; }
+    void resetFrameCount() { frameCount_ = 0; }
+    
+    int getFrameCount() const { return frameCount_; }
+    bool isRunning() const { 
+        return external_running_flag_ && *external_running_flag_; 
     }
 
 private:
+    SPSCRingBuffer<ComPtr<IMFSample>, RING_BUFFER_SIZE>* ringBuffer_;
+    std::atomic<bool>* external_running_flag_;
     IMFSourceReader* reader_ = nullptr;
-    SPSCRingBuffer<ComPtr<IMFSample>, 1024>* ringBuffer_ = nullptr;
-    FFmpeg* ffmpeg_ = nullptr;
+    std::atomic<int> frameCount_{0};
+    
+    void logTimestamp(LONGLONG timestamp) {
+        std::cout << "[Info] 수신 타임스탬프: " << timestamp 
+                  << ", frame count: " << frameCount_ << "\n";
+        
+        writeCsvLog(timestamp);
+    }
+    
+    void writeCsvLog(LONGLONG timestamp) {
+        static std::ofstream csv("timestamps.csv", std::ios::out);
+        static bool wroteHeader = false;
+        static LONGLONG prevTimestamp = -1;
 
-    std::atomic<bool>* external_running_flag_ = nullptr;
+        if (csv.is_open()) {
+            if (!wroteHeader) {
+                csv << "FrameIndex,Timestamp100ns,Timestamp(ms),Delta100ns,Delta(ms)\n";
+                wroteHeader = true;
+            }
+
+            LONGLONG delta = (prevTimestamp < 0) ? 0 : (timestamp - prevTimestamp);
+            double timestamp_ms = timestamp / 10000.0;
+            double delta_ms = delta / 10000.0;
+
+            csv << frameCount_ << "," << timestamp << "," << timestamp_ms << ","
+                << delta << "," << delta_ms << "\n";
+
+            prevTimestamp = timestamp;
+        }
+    }
+    
+    void requestNextFrame() {
+        if (reader_ && isRunning()) {
+            reader_->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, 
+                               nullptr, nullptr, nullptr, nullptr);
+        }
+    }
 };
 
 
 /**
- *  Helper: MediaFoundation
+ * Refactored MediaFoundation
  */
 class MediaFoundation {
 public:
-    // initial
     MediaFoundation() {
         HRESULT hr = MFStartup(MF_VERSION);
-
         if (HFailed(hr, "[MediaFoundation] MFStartup")) { return; }
-        else { initialized_ = true; }
+        initialized_ = true;
     }
 
     ~MediaFoundation() {
         if (initialized_) { MFShutdown(); }
     }
 
-    // helper
-    std::optional<ComPtr<IMFActivate>> getDevice(Config config) {
-        HRESULT hr = S_OK;
-
-        // get every devices
-        ComPtr<IMFAttributes> every_attributes;
-        hr = MFCreateAttributes(&every_attributes, 1);
-        if (HFailed(hr, "[_getDevice] MFCreateAttributes failed")) std::nullopt;
-
-        hr = every_attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-        if (HFailed(hr, "[_getDevice] SetGUID failed")) std::nullopt;
-
-        IMFActivate** every_devices = nullptr;
-        UINT32 every_count = 0;
-
-        hr = MFEnumDeviceSources(every_attributes.Get(), &every_devices, &every_count);
-        if (HFailed(hr, "[_getDevice] MFEnumDeviceSources failed")) std::nullopt;
-
-        // get video devices
-        ComPtr<IMFAttributes> video_attributes;
-
-        hr = MFCreateAttributes(&video_attributes, 1);
-        if (HFailed(hr, "[_getDevice] MFCreateAttributes failed")) std::nullopt;
-
-        hr = video_attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-        if (HFailed(hr, "[_getDevice] SetGUID failed")) std::nullopt;
-
-        IMFActivate** video_devices = nullptr;
-        UINT32 video_count = 0;
-
-        hr = MFEnumDeviceSources(video_attributes.Get(), &video_devices, &video_count);
-        if (HFailed(hr, "[_getDevice] MFEnumDeviceSources failed")) std::nullopt;
-
-        // get target device
-        IMFActivate* target_device = every_devices[config.camera_index];
-        ComPtr <IMFActivate> device = target_device;
-
-        // check
-        BOOL match = FALSE;
-        bool is_valid = std::any_of(
-            video_devices, video_devices + video_count,
-            [&](IMFActivate* video_dev) {
-                match = FALSE;
-                return SUCCEEDED(target_device->Compare(video_dev, MF_ATTRIBUTES_MATCH_INTERSECTION, &match)) && match;
-            }
-        );
-        
-        // clean up
-        CoTaskMemFree(every_devices);
-        CoTaskMemFree(video_devices);
-
-        // return
-        if (!is_valid) std::nullopt;
-
-        return device;
+    std::optional<ComPtr<IMFActivate>> createDevice(const Config& config) {
+        return getDevice(config);
     }
 
-    SPSCRingBuffer<ComPtr<IMFSample>, 1024> getRingBuffer() {
-        return SPSCRingBuffer<ComPtr<IMFSample>, 1024>();
+    std::optional<ComPtr<IMFSourceReader>> createSourceReader(
+        ComPtr<IMFActivate> device, 
+        ComPtr<IMFSourceReaderCallback> callback,
+        const Config& config) {
+        return getSourceReader(device, callback, config);
     }
 
-    std::optional<ComPtr<SampleCallback>> getCallback(SPSCRingBuffer<ComPtr<IMFSample>, 1024>& ringBuffer) {
-        auto callback = Microsoft::WRL::Make<SampleCallback>();
-
-        callback->setSPSCRingBuffer(&ringBuffer);
-
-        return callback;
-    }
-
-    std::optional<ComPtr<IMFSourceReader>> getSourceReader(ComPtr<IMFActivate> device, ComPtr<SampleCallback> callback, Config config) {
-        HRESULT hr = MFStartup(MF_VERSION);
-
-        ComPtr<IMFMediaSource> pSource;
-        ComPtr<IMFAttributes> pAttributes;
-        ComPtr<IMFSourceReader> pSourceReader;
+    ComPtr<IMFMediaType> createMediaType(const Config& config) {
         ComPtr<IMFMediaType> pType;
-        
-        // create device source
-        hr = device->ActivateObject(IID_PPV_ARGS(&pSource));
-        if (HFailed(hr, "[_getIMFSourceReader] ActivateObject failed")) return std::nullopt;
+        HRESULT hr = MFCreateMediaType(&pType);
+        if (FAILED(hr)) return nullptr;
 
-        // create callback attributes
-        hr = MFCreateAttributes(&pAttributes, 1);
-        if (HFailed(hr, "[_getIMFSourceReader] MFCreateAttributes failed")) return std::nullopt;
-
-        hr = pAttributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, callback.Get());
-        if (HFailed(hr, "[_getIMFSourceReader] SetUnknown failed")) return std::nullopt;
-        
-        // create source reader
-        hr = MFCreateSourceReaderFromMediaSource(pSource.Get(), pAttributes.Get(), &pSourceReader);
-        if (HFailed(hr, "[_getIMFSourceReader] MFCreateSourceReaderFromMediaSource failed")) return std::nullopt;
-        
-        // create media type        
-        hr = MFCreateMediaType(&pType);
-        if (HFailed(hr, "[_getIMFSourceReader] MFCreateMediaType failed")) return std::nullopt;
-
-        // set media attributes
-        pType->SetGUID(MF_MT_SUBTYPE, config.pixel_format);
+        pType->SetGUID(MF_MT_SUBTYPE, PixelFormatFromString(config.pixel_format));
         pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
         pType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
 
         MFSetAttributeSize(pType.Get(), MF_MT_FRAME_SIZE, config.frame_width, config.frame_height);
         MFSetAttributeRatio(pType.Get(), MF_MT_FRAME_RATE, config.frame_rate, 1);
 
-
-        hr = pSourceReader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, pType.Get());
-        if (HFailed(hr, "[_getIMFSourceReader] SetCurrentMediaType failed")) return std::nullopt;
-
-        // + register callback
-        callback->setReader(pSourceReader.Get());
-        
-        // return
-        return pSourceReader;
-    }
-
-    HRESULT getSource(ComPtr<IMFSourceReader> source_reader, Config config) {
-        HRESULT hr = S_OK;
-
-        hr = source_reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, nullptr, nullptr, nullptr);
-        if (HFailed(hr, "[_getSource] ReadSample failed")) return hr;
-
-        return hr;
+        return pType;
     }
 
 private:
     bool initialized_ = false;
+    
+    std::optional<ComPtr<IMFActivate>> getDevice(const Config& config) {
+        HRESULT hr = S_OK;
+
+        ComPtr<IMFAttributes> every_attributes;
+        hr = MFCreateAttributes(&every_attributes, 1);
+        if (HFailed(hr, "[_getDevice] MFCreateAttributes failed")) return std::nullopt;
+
+        hr = every_attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+        if (HFailed(hr, "[_getDevice] SetGUID failed")) return std::nullopt;
+
+        IMFActivate** every_devices_raw = nullptr;
+        UINT32 every_count = 0;
+
+        hr = MFEnumDeviceSources(every_attributes.Get(), &every_devices_raw, &every_count);
+        if (HFailed(hr, "[_getDevice] MFEnumDeviceSources failed")) return std::nullopt;
+
+        CoTaskMemPtr<IMFActivate*> every_devices(every_devices_raw);
+
+        ComPtr<IMFAttributes> video_attributes;
+
+        hr = MFCreateAttributes(&video_attributes, 1);
+        if (HFailed(hr, "[_getDevice] MFCreateAttributes failed")) return std::nullopt;
+
+        hr = video_attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
+        if (HFailed(hr, "[_getDevice] SetGUID failed")) return std::nullopt;
+
+        IMFActivate** video_devices_raw = nullptr;
+        UINT32 video_count = 0;
+
+        hr = MFEnumDeviceSources(video_attributes.Get(), &video_devices_raw, &video_count);
+        if (HFailed(hr, "[_getDevice] MFEnumDeviceSources failed")) return std::nullopt;
+
+        CoTaskMemPtr<IMFActivate*> video_devices(video_devices_raw);
+
+        int camera_index = config.camera_indices.empty() ? 0 : config.camera_indices[0];
+        
+        if (camera_index >= static_cast<int>(every_count)) {
+            std::cout << "[Error] 잘못된 카메라 인덱스: " << camera_index << "\n";
+            return std::nullopt;
+        }
+
+        IMFActivate* target_device = every_devices_raw[camera_index];
+        ComPtr<IMFActivate> device = target_device;
+
+        BOOL match = FALSE;
+        bool is_valid = std::any_of(
+            video_devices_raw, video_devices_raw + video_count,
+            [&](IMFActivate* video_dev) {
+                match = FALSE;
+                return SUCCEEDED(target_device->Compare(video_dev, MF_ATTRIBUTES_MATCH_INTERSECTION, &match)) && match;
+            }
+        );
+        
+        if (!is_valid) return std::nullopt;
+
+        return device;
+    }
+
+    std::optional<ComPtr<IMFSourceReader>> getSourceReader(
+        ComPtr<IMFActivate> device, 
+        ComPtr<IMFSourceReaderCallback> callback, 
+        const Config& config) {
+        HRESULT hr = S_OK;
+
+        ComPtr<IMFMediaSource> pSource;
+        ComPtr<IMFAttributes> pAttributes;
+        ComPtr<IMFSourceReader> pSourceReader;
+        ComPtr<IMFMediaType> pType;
+        
+        hr = device->ActivateObject(IID_PPV_ARGS(&pSource));
+        if (HFailed(hr, "[_getIMFSourceReader] ActivateObject failed")) return std::nullopt;
+
+        hr = MFCreateAttributes(&pAttributes, 1);
+        if (HFailed(hr, "[_getIMFSourceReader] MFCreateAttributes failed")) return std::nullopt;
+
+        hr = pAttributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, callback.Get());
+        if (HFailed(hr, "[_getIMFSourceReader] SetUnknown failed")) return std::nullopt;
+        
+        hr = MFCreateSourceReaderFromMediaSource(pSource.Get(), pAttributes.Get(), &pSourceReader);
+        if (HFailed(hr, "[_getIMFSourceReader] MFCreateSourceReaderFromMediaSource failed")) return std::nullopt;
+        
+        hr = MFCreateMediaType(&pType);
+        if (HFailed(hr, "[_getIMFSourceReader] MFCreateMediaType failed")) return std::nullopt;
+
+        pType->SetGUID(MF_MT_SUBTYPE, PixelFormatFromString(config.pixel_format));
+        pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
+        pType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
+
+        MFSetAttributeSize(pType.Get(), MF_MT_FRAME_SIZE, config.frame_width, config.frame_height);
+        MFSetAttributeRatio(pType.Get(), MF_MT_FRAME_RATE, config.frame_rate, 1);
+
+        hr = pSourceReader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, pType.Get());
+        if (HFailed(hr, "[_getIMFSourceReader] SetCurrentMediaType failed")) return std::nullopt;
+        
+        return pSourceReader;
+    }
+
+    GUID PixelFormatFromString(const std::string& format) {
+        if (format == "NV12")  return MFVideoFormat_NV12;
+        if (format == "MJPG")  return MFVideoFormat_MJPG;
+        if (format == "YUY2")  return MFVideoFormat_YUY2;
+        if (format == "RGB32") return MFVideoFormat_RGB32;
+        if (format == "I420")  return MFVideoFormat_I420;
+        if (format == "UYVY")  return MFVideoFormat_UYVY;
+
+        throw std::invalid_argument("Unsupported pixel format: " + format);
+    }
 };
 
 
 /**
- *  Main
+ * SingleManager Class
  */
-int main(int argc, char* argv[]) {    
-    // Initialize
-    HRESULT hr = S_OK;
+class SingleManager {
+public:
+    enum class State {
+        IDLE,
+        SETTING_UP,
+        READY,
+        WARMING_UP,
+        WARMED_UP,
+        RUNNING,
+        STOPPING,
+        ERROR_STATE
+    };
 
-    Config config = parse_args(argc, argv);
-    MediaFoundation mf;
-
-    // get device
-    auto device = mf.getDevice(config);
-    if (!device) {
-        std::cout << "[Error] 카메라를 찾을 수 없습니다.\n";
-        return -1;
-    }
-    std::cout << "[Info] 카메라를 찾았습니다.\n";
-
-    // get Queue
-    auto ringBuffer = mf.getRingBuffer();
-    std::cout << "[Info] SPSCRingBuffer를 생성했습니다.\n";
-
-    // get callback
-    auto callback = mf.getCallback(ringBuffer);
-    if (!callback) {
-        std::cout << "[Error] IMFSourceReaderCallback을 생성할 수 없습니다.\n";
-        return -1;
-    }
-    std::cout << "[Info] IMFSourceReaderCallback을 생성했습니다.\n";
-
-    // get source reader
-    auto source_reader = mf.getSourceReader(device.value(), callback.value(), config);
-    if (!source_reader) {
-        std::cout << "[Error] IMFSourceReader를 생성할 수 없습니다.\n";
-        return -1;
-    }
-    std::cout << "[Info] IMFSourceReader를 생성했습니다.\n";
-
-    // get some Source
-    auto source = mf.getSource(source_reader.value(), config);
-    if (HFailed(source, "[Error] getSource를 실행할 수 없습니다.\n")) return -1;
-    std::cout << "[Info] getSource를 실행했습니다.\n";
-
-    /**
-     *  FFmpeg
-     */
-
-    FFmpeg ffmpeg;
-
-    ffmpeg.setConfig(config);
-    if (!ffmpeg.start()) {
-        std::cerr << "[Main] FFmpeg 실행 실패\n";
-        return -1;
+    SingleManager(const Config& config) : config_(config), state_(State::IDLE) {
+        if (config_.camera_indices.empty()) {
+            throw std::invalid_argument("카메라 인덱스가 비어있습니다.");
+        }
+        
+        ringBuffer_ = std::make_unique<SPSCRingBuffer<ComPtr<IMFSample>, RING_BUFFER_SIZE>>();
+        ffmpeg_ = std::make_unique<FFmpeg>();
+        mf_ = std::make_unique<MediaFoundation>();
     }
 
-    callback.value()->setFFmpeg(&ffmpeg);
+    ~SingleManager() {
+        if (state_ == State::RUNNING) {
+            stop();
+        }
+    }
 
-    std::atomic<bool> running = true;
-    std::thread consumer_thread([&]() {
-        while (running) {
-            auto sample_opt = ringBuffer.dequeue();
+    bool setup() {
+        if (state_ != State::IDLE) {
+            std::cerr << "[SingleManager] Setup 실패: 잘못된 상태 " << stateToString(state_) << "\n";
+            return false;
+        }
+
+        state_ = State::SETTING_UP;
+
+        try {
+            auto device = mf_->createDevice(config_);
+            if (!device) {
+                throw std::runtime_error("Camera Device 생성 실패");
+            }
+            device_ = device.value();
+            std::cout << "[SingleManager] Camera Device 생성 완료\n";
+
+            running_flag_ = std::make_unique<std::atomic<bool>>(false);
+            callback_ = Microsoft::WRL::Make<SampleCallback>(ringBuffer_.get(), running_flag_.get());
+            std::cout << "[SingleManager] Callback 생성 완료\n";
+
+            auto sourceReader = mf_->createSourceReader(device_, callback_, config_);
+            if (!sourceReader) {
+                throw std::runtime_error("SourceReader 생성 실패");
+            }
+            sourceReader_ = sourceReader.value();
+            callback_->setReader(sourceReader_.Get());
+            std::cout << "[SingleManager] SourceReader 생성 완료\n";
+
+            ffmpeg_->setConfig(config_);
+            std::cout << "[SingleManager] FFmpeg 설정 완료\n";
+
+            state_ = State::READY;
+            std::cout << "[SingleManager] Setup 완료\n";
+            return true;
+
+        } catch (const std::exception& e) {
+            std::cerr << "[SingleManager] Setup 실패: " << e.what() << "\n";
+            state_ = State::ERROR_STATE;
+            return false;
+        }
+    }
+
+    bool warmup() {
+        if (state_ != State::READY) {
+            std::cerr << "[SingleManager] Warmup 실패: 잘못된 상태 " << stateToString(state_) << "\n";
+            return false;
+        }
+
+        state_ = State::WARMING_UP;
+
+        try {
+            if (!ffmpeg_->start()) {
+                throw std::runtime_error("FFmpeg 시작 실패");
+            }
+            std::cout << "[SingleManager] FFmpeg 시작 완료\n";
+
+            *running_flag_ = true;
+            consumer_thread_ = std::thread([this]() { this->consumerLoop(); });
+            std::cout << "[SingleManager] Consumer Thread 시작\n";
+
+            HRESULT hr = sourceReader_->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, 
+                                                  nullptr, nullptr, nullptr, nullptr);
+            if (FAILED(hr)) {
+                throw std::runtime_error("첫 ReadSample 실패");
+            }
+
+            std::this_thread::sleep_for(std::chrono::seconds(3));
+            callback_->resetFrameCount();
+
+            state_ = State::WARMED_UP;
+            std::cout << "[SingleManager] Warmup 완료\n";
+            return true;
+
+        } catch (const std::exception& e) {
+            std::cerr << "[SingleManager] Warmup 실패: " << e.what() << "\n";
+            state_ = State::ERROR_STATE;
+            return false;
+        }
+    }
+
+    bool run() {
+        if (state_ != State::WARMED_UP) {
+            std::cerr << "[SingleManager] Run 실패: 잘못된 상태 " << stateToString(state_) << "\n";
+            return false;
+        }
+
+        state_ = State::RUNNING;
+        start_time_ = std::chrono::steady_clock::now();
+
+        std::cout << "[SingleManager] Recording 시작\n";
+        std::this_thread::sleep_for(std::chrono::seconds(config_.record_duration));
+        std::cout << "[SingleManager] Recording 완료\n";
+        return true;
+    }
+
+    void stop() {
+        if (state_ != State::RUNNING && state_ != State::WARMED_UP) {
+            return;
+        }
+
+        state_ = State::STOPPING;
+        std::cout << "[SingleManager] 종료 시작\n";
+
+        *running_flag_ = false;
+
+        if (sourceReader_) {
+            sourceReader_->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
+            std::cout << "[SingleManager] SourceReader 플러시 완료\n";
+        }
+
+        if (consumer_thread_.joinable()) {
+            consumer_thread_.join();
+            std::cout << "[SingleManager] Consumer Thread 종료 완료\n";
+        }
+
+        auto processed = processRemainingData();
+        std::cout << "[SingleManager] 남은 데이터 " << processed << "개 처리 완료\n";
+
+        ffmpeg_->stop();
+        std::cout << "[SingleManager] FFmpeg 종료 완료\n";
+
+        cleanup();
+
+        state_ = State::IDLE;
+        std::cout << "[SingleManager] 종료 완료\n";
+    }
+
+    State getState() const { return state_; }
+    bool isReady() const { return state_ == State::READY || state_ == State::WARMED_UP; }
+    bool isRunning() const { return state_ == State::RUNNING; }
+    bool isError() const { return state_ == State::ERROR_STATE; }
+
+    struct Statistics {
+        int frame_count;
+        double recording_duration_ms;
+        SPSCRingBuffer<ComPtr<IMFSample>, RING_BUFFER_SIZE>::Stats buffer_stats;
+        FFmpeg::State ffmpeg_state;
+    };
+
+    Statistics getStatistics() const {
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_time_).count();
+
+        return Statistics{
+            callback_ ? callback_->getFrameCount() : 0,
+            static_cast<double>(duration),
+            ringBuffer_->getStats(),
+            ffmpeg_->getState()
+        };
+    }
+
+    void printStatus() const {
+        auto stats = getStatistics();
+        std::cout << "[SingleManager] 상태: " << stateToString(state_)
+                  << ", Frames: " << stats.frame_count
+                  << ", Duration: " << stats.recording_duration_ms << "ms"
+                  << ", Buffer: " << stats.buffer_stats.size << "/" << ringBuffer_->capacity()
+                  << "\n";
+    }
+
+private:
+    Config config_;
+    std::atomic<State> state_;
+    std::chrono::steady_clock::time_point start_time_;
+
+    std::unique_ptr<MediaFoundation> mf_;
+    std::unique_ptr<FFmpeg> ffmpeg_;
+    std::unique_ptr<SPSCRingBuffer<ComPtr<IMFSample>, RING_BUFFER_SIZE>> ringBuffer_;
+    std::unique_ptr<std::atomic<bool>> running_flag_;
+
+    ComPtr<IMFActivate> device_;
+    ComPtr<IMFSourceReader> sourceReader_;
+    ComPtr<SampleCallback> callback_;
+
+    std::thread consumer_thread_;
+
+    void consumerLoop() {
+        std::cout << "[Consumer] Thread 시작\n";
+        
+        while (*running_flag_ || !ringBuffer_->empty()) {
+            auto sample_opt = ringBuffer_->dequeue();
             if (sample_opt) {
-                ComPtr<IMFMediaBuffer> buffer;
-                DWORD maxLength = 0, currentLength = 0;
-                BYTE* data = nullptr;
-
-                if (SUCCEEDED(sample_opt.value()->ConvertToContiguousBuffer(&buffer)) &&
-                    SUCCEEDED(buffer->Lock(&data, &maxLength, &currentLength))) {
-
-                    if (!ffmpeg.write(data, currentLength)) {
-                        std::cerr << "[Consumer] FFmpeg write 실패, 쓰레드 종료\n";
-                        break;
-                    }
-
-                    buffer->Unlock();
+                if (!processSample(sample_opt.value())) {
+                    std::cerr << "[Consumer] Sample 처리 실패, Thread 종료\n";
+                    *running_flag_ = false;
+                    break;
                 }
             } else {
-                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                std::this_thread::sleep_for(std::chrono::microseconds(100));
             }
         }
-    });
+        
+        std::cout << "[Consumer] Thread 종료\n";
+    }
+
+    bool processSample(ComPtr<IMFSample> sample) {
+        ComPtr<IMFMediaBuffer> buffer;
+        DWORD maxLength = 0, currentLength = 0;
+        BYTE* data = nullptr;
+
+        HRESULT hr = sample->ConvertToContiguousBuffer(&buffer);
+        if (FAILED(hr)) return false;
+
+        hr = buffer->Lock(&data, &maxLength, &currentLength);
+        if (FAILED(hr)) return false;
+
+        bool result = ffmpeg_->write(data, currentLength);
+        
+        buffer->Unlock();
+        return result;
+    }
+
+    std::size_t processRemainingData() {
+        return ringBuffer_->drainAll([this](ComPtr<IMFSample> sample) {
+            processSample(sample);
+        });
+    }
+
+    void cleanup() {
+        callback_.Reset();
+        sourceReader_.Reset();
+        device_.Reset();
+        
+        if (running_flag_) {
+            *running_flag_ = false;
+        }
+    }
+
+    std::string stateToString(State state) const {
+        switch (state) {
+            case State::IDLE: return "IDLE";
+            case State::SETTING_UP: return "SETTING_UP";
+            case State::READY: return "READY";
+            case State::WARMING_UP: return "WARMING_UP";
+            case State::WARMED_UP: return "WARMED_UP";
+            case State::RUNNING: return "RUNNING";
+            case State::STOPPING: return "STOPPING";
+            case State::ERROR_STATE: return "ERROR";
+            default: return "UNKNOWN";
+        }
+    }
+};
 
 
-    // 30초 대기 후 종료
-    std::this_thread::sleep_for(std::chrono::seconds(config.duration));
+/**
+ * MultiCameraManager Class (C++17 compatible)
+ */
+class MultiCameraManager {
+public:
+    bool setupAllCameras(const std::vector<Config>& configs) {
+        cameras_.clear();
+        
+        for (const auto& config : configs) {
+            auto manager = std::make_unique<SingleManager>(config);
+            
+            if (!manager->setup()) {
+                int camera_index = config.camera_indices.empty() ? 0 : config.camera_indices[0];
+                std::cerr << "[MultiCamera] Camera " << camera_index << " Setup 실패\n";
+                return false;
+            }
+            
+            cameras_.push_back(std::move(manager));
+        }
+        
+        std::cout << "[MultiCamera] 모든 Camera Setup 완료\n";
+        return true;
+    }
+    
+    bool warmupAllCameras() {
+        for (auto& camera : cameras_) {
+            if (!camera->warmup()) {
+                std::cerr << "[MultiCamera] Warmup 실패\n";
+                return false;
+            }
+        }
+        
+        std::cout << "[MultiCamera] 모든 Camera Warmup 완료\n";
+        return true;
+    }
+    
+    void startSynchronizedRecording() {
+        Barrier sync_barrier(cameras_.size() + 1);
+        
+        std::vector<std::thread> recording_threads;
+        
+        for (auto& camera : cameras_) {
+            recording_threads.emplace_back([&camera, &sync_barrier]() {
+                sync_barrier.arrive_and_wait();
+                camera->run();
+            });
+        }
+        
+        sync_barrier.arrive_and_wait();
+        std::cout << "[MultiCamera] 동시 Recording 시작!\n";
+        
+        for (auto& thread : recording_threads) {
+            thread.join();
+        }
+        
+        std::cout << "[MultiCamera] 모든 Recording 완료\n";
+    }
+    
+private:
+    std::vector<std::unique_ptr<SingleManager>> cameras_;
+};
 
-    // 1. Read 중단
-    source_reader.value()->Flush(MF_SOURCE_READER_FIRST_VIDEO_STREAM);
 
-    // 2. Consumer 쓰레드 종료
-    running = false;
-    consumer_thread.join();
+/**
+ * Main Function
+ */
 
-    // 3. stdin 파이프 닫기 → 반드시 이 순서
-    ffmpeg.stop();  // 내부에서 CloseHandle(ffmpeg_stdin_) 호출됨
-
-    MFShutdown();            // Media Foundation 종료
+int main(int argc, char* argv[]) {
+    Config config = parse_args(argc, argv);
+    
+    if (!config.validate()) {
+        std::cerr << "[Main] 설정 오류로 인해 프로그램을 종료합니다.\n";
+        return -1;
+    }
+    
+    config.print();
+    
+    auto configs = createMultiCameraConfigs(config);
+    
+    std::cout << "[Main] " << configs.size() << "개 카메라로 실행합니다.\n";
+    
+    MultiCameraManager multiManager;
+    
+    if (!multiManager.setupAllCameras(configs)) {
+        std::cerr << "[Main] 카메라 Setup 실패\n";
+        return -1;
+    }
+    
+    if (!multiManager.warmupAllCameras()) {
+        std::cerr << "[Main] 카메라 Warmup 실패\n";
+        return -1;
+    }
+    
+    multiManager.startSynchronizedRecording();
+    std::cout << "[Main] Recording 완료\n";
+    
+    return 0;
 }

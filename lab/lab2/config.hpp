@@ -9,10 +9,11 @@
 
 struct Config {
     int camera_index = 0;
-    int frame_width = 1280;
-    int frame_height = 720;
+    int frame_width = 160;
+    int frame_height = 90;
     int frame_rate = 30;
-    GUID pixel_format = MFVideoFormat_NV12;
+    GUID pixel_format = MFVideoFormat_MJPG;
+    int duration = 10;
 };
 
 Config parse_args(int argc, char* argv[]) {
@@ -21,31 +22,27 @@ Config parse_args(int argc, char* argv[]) {
     std::unordered_map<std::string, std::function<void(const std::string&)>> handlers = {
         { "--camera_index", [&](const std::string& v) { config.camera_index = std::stoi(v); } },
         { "--frame_rate",   [&](const std::string& v) { config.frame_rate = std::stoi(v); } },
-        { "--resolution", [&](const std::string& v) {
-            if (v == "720p") {
-                config.frame_width = 1280;
-                config.frame_height = 720;
-            } else if (v == "1080p") {
-                config.frame_width = 1920;
-                config.frame_height = 1080;
-            } else if (v == "4k" || v == "2160p") {
-                config.frame_width = 3840;
-                config.frame_height = 2160;
-            } else {
-                std::cout << "[Warning] 지원하지 않는 해상도: " << v << "\n";
-                std::cout << "          사용 가능한 해상도: 720p, 1080p, 4k\n";
-            }
-        }},
+        { "--frame_width",  [&](const std::string& v) { config.frame_width = std::stoi(v); } },
+        { "--frame_height", [&](const std::string& v) { config.frame_height = std::stoi(v); } },
         { "--pixel_format", [&](const std::string& v) { 
             if (v == "NV12") {
                 config.pixel_format = MFVideoFormat_NV12;
             } else if (v == "MJPG") {
                 config.pixel_format = MFVideoFormat_MJPG;
-            } else {
-                std::cout << "[Warning] 지원하지 않는 형식: " << v << "\n";
-                std::cout << "          사용 가능한 해상도: NV12, YUY2\n";
+            } else if (v == "YUY2") {
+                config.pixel_format = MFVideoFormat_YUY2;
             }
-        }}
+        }},
+        { "--duration", [&](const std::string& v) { 
+            try {
+                config.duration = std::stoi(v);
+                if (config.duration <= 0) {
+                    throw std::invalid_argument("지속 시간은 양수여야 합니다.");
+                }
+            } catch (const std::exception& e) {
+                std::cout << "[Error] 지속 시간 파싱 실패: " << e.what() << "\n";
+            }
+        }},
     };
 
     for (int i = 1; i < argc; i += 2) {

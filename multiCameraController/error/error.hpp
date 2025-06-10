@@ -1,13 +1,9 @@
 #pragma once
 
-#include <Windows.h>
 #include <iostream>
 #include <sstream>
+#include <windows.h>
 
-
-/**
- *  @method: HFailed
- */
 
 inline bool HFailed(HRESULT hr, const char* message) {
     if (FAILED(hr)) {
@@ -15,6 +11,17 @@ inline bool HFailed(HRESULT hr, const char* message) {
         oss << "[Error] " << message << " failed: 0x" << std::hex << hr << "\n";
         
         std::cout << oss.str();
+        
+        return true;
+    }
+    return false;
+}
+
+inline bool CFailed(HRESULT hr, const char* message) {
+    if (FAILED(hr)) {
+        std::ostringstream oss;
+        oss << "[Error] " << message << " failed: 0x" << std::hex << hr << "\n";
+        
         std::cout << oss.str();
         
         return true;

@@ -9,6 +9,8 @@ where cl
 
 cl /EHsc /std:c++17 /Iinclude /Icapture /Iutil multiCameraController/main.cpp /Fe:multiCameraController/bin/main.exe mfplat.lib mf.lib mfreadwrite.lib mfuuid.lib ole32.lib uuid.lib
 
+cl /EHsc /std:c++17 /Iinclude /Icapture /Iutil multiCameraController/main.cpp /Fe:multiCameraController/bin/main.exe mfplat.lib mf.lib mfreadwrite.lib mfuuid.lib ole32.lib uuid.lib
+
 dir capture.exe
 ```
 

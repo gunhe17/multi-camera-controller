@@ -9,15 +9,9 @@
 
 struct Config {
     int camera_index = 0;
-    int frame_width = 1280;
-    int frame_height = 720;
-    int frame_rate = 5;
-    std::string pixel_format = "MJPG";
-    int record_duration = 120;
-
-    // path
-    std::string ffmpeg = "ffmpeg";
-    std::string output = "output.avi";
+    int frame_width = 1;
+    int frame_height = 1;
+    int frame_rate = 1;
 };
 
 Config parse_args(int argc, char* argv[]) {
@@ -25,11 +19,9 @@ Config parse_args(int argc, char* argv[]) {
 
     std::unordered_map<std::string, std::function<void(const std::string&)>> handlers = {
         { "--camera_index", [&](const std::string& v) { config.camera_index = std::stoi(v); } },
-        { "--frame_width",   [&](const std::string& v) { config.frame_width = std::stoi(v); } },
-        { "--frame_height",   [&](const std::string& v) { config.frame_height = std::stoi(v); } },
+        { "--frame_width",   [&](const std::string& v) { config.frame_rate = std::stoi(v); } },
+        { "--frame_height",   [&](const std::string& v) { config.frame_rate = std::stoi(v); } },
         { "--frame_rate",   [&](const std::string& v) { config.frame_rate = std::stoi(v); } },
-        { "--record_duration",   [&](const std::string& v) { config.record_duration = std::stoi(v); } },
-        { "--pixel_format",   [&](const std::string& v) { config.pixel_format = std::stoi(v); } },
     };
 
     for (int i = 1; i < argc; i += 2) {

@@ -56,46 +56,6 @@ inline bool HFailed(HRESULT hr, const char* message) {
 
 
 /**
- *  Helper: Callback
- */
-class SampleCallback : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFSourceReaderCallback> {
-public:
-    // common
-    STDMETHODIMP OnReadSample(HRESULT hrStatus, DWORD streamIndex, DWORD flags, LONGLONG llTimestamp, IMFSample* sample) override {
-        if (end_) {
-            return S_OK;
-        }
-
-        frameCount_++;
-        std::cout << "[Info] Frame \n";
-        std::cout << "[Info] Frame Count: " << frameCount_ << "\n";
-
-        if (reader_) {
-            reader_->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, nullptr, nullptr, nullptr);
-        }
-
-        return S_OK;
-    }
-    STDMETHODIMP OnEvent(DWORD, IMFMediaEvent*) override { return S_OK; }
-    STDMETHODIMP OnFlush(DWORD) override { return S_OK; }
-
-    // helper
-    void setReader(IMFSourceReader* reader) {
-        reader_ = reader;
-    }
-    void stop() {
-        end_ = true;
-    }
-
-private:
-    IMFSourceReader* reader_ = nullptr;
-    std::atomic<bool> end_ = false;
-    std::atomic<int> frameCount_ = 0;
-
-};
-
-
-/**
  *  Helper: MediaFoundation
  */
 class MediaFoundation {
@@ -169,13 +129,7 @@ public:
         return device;
     }
 
-    std::optional<ComPtr<SampleCallback>> getCallback() {
-        auto callback = Microsoft::WRL::Make<SampleCallback>();
-
-        return callback;
-    }
-
-    std::optional<ComPtr<IMFSourceReader>> getSourceReader(ComPtr<IMFActivate> device, ComPtr<SampleCallback> callback, Config config) {
+    std::optional<ComPtr<IMFSourceReader>> getSourceReader(ComPtr<IMFActivate> device, Config config) {
         HRESULT hr = MFStartup(MF_VERSION);
 
         ComPtr<IMFMediaSource> pSource;
@@ -187,12 +141,9 @@ public:
         hr = device->ActivateObject(IID_PPV_ARGS(&pSource));
         if (HFailed(hr, "[_getIMFSourceReader] ActivateObject failed")) return std::nullopt;
 
-        // create callback attributes
+        // create attributes
         hr = MFCreateAttributes(&pAttributes, 1);
         if (HFailed(hr, "[_getIMFSourceReader] MFCreateAttributes failed")) return std::nullopt;
-
-        hr = pAttributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, callback.Get());
-        if (HFailed(hr, "[_getIMFSourceReader] SetUnknown failed")) return std::nullopt;
         
         // create source reader
         hr = MFCreateSourceReaderFromMediaSource(pSource.Get(), pAttributes.Get(), &pSourceReader);
@@ -201,35 +152,57 @@ public:
         // create media type        
         hr = MFCreateMediaType(&pType);
         if (HFailed(hr, "[_getIMFSourceReader] MFCreateMediaType failed")) return std::nullopt;
-
-        // set media attributes
-        pType->SetGUID(MF_MT_SUBTYPE, config.pixel_format);
-        pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
-        pType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive);
-
-        MFSetAttributeSize(pType.Get(), MF_MT_FRAME_SIZE, config.frame_width, config.frame_height);
-        MFSetAttributeRatio(pType.Get(), MF_MT_FRAME_RATE, config.frame_rate, 1);
-
-
-        hr = pSourceReader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, pType.Get());
-        if (HFailed(hr, "[_getIMFSourceReader] SetCurrentMediaType failed")) return std::nullopt;
-
-        // + register callback
-        callback->setReader(pSourceReader.Get());
         
         // return
         return pSourceReader;
     }
 
-    HRESULT getSource(ComPtr<IMFSourceReader> source_reader, Config config) {
-        HRESULT hr = S_OK;
+    void getMediaType(ComPtr<IMFSourceReader> reader, Config config) {
+        DWORD index = 0;
+        ComPtr<IMFMediaType> pType;
 
-        hr = source_reader->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, nullptr, nullptr, nullptr);
-        if (HFailed(hr, "[_getSource] ReadSample failed")) return hr;
+        while (SUCCEEDED(reader->GetNativeMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, index, &pType))) {
+            GUID subtype = {};
+            UINT32 width = 0, height = 0, fpsNum = 0, fpsDen = 1;
 
-        return hr;
+            pType->GetGUID(MF_MT_SUBTYPE, &subtype);
+            MFGetAttributeSize(pType.Get(), MF_MT_FRAME_SIZE, &width, &height);
+            MFGetAttributeRatio(pType.Get(), MF_MT_FRAME_RATE, &fpsNum, &fpsDen);
+
+            float fps = fpsDen ? static_cast<float>(fpsNum) / fpsDen : 0.0f;
+
+            if (width >= config.frame_width && height >= config.frame_height &&
+                (fpsDen != 0 && fpsNum >= config.frame_rate * fpsDen)) {
+                
+                std::string format = GuidToFourCC(subtype);
+                std::wstring formatW(format.begin(), format.end());
+
+                std::wcout << L"[" << index << L"] "
+                        << L"Format: " << formatW
+                        << L", Resolution: " << width << L"x" << height
+                        << L", FPS: " << fps
+                        << std::endl;
+            }
+
+            pType.Reset();
+            index++;
+        }
+
+        if (index == 0) {
+            std::wcout << L"No supported media types found." << std::endl;
+        }
     }
-
+    inline std::string GuidToFourCC(GUID guid) {
+        char fourcc[5] = {
+            static_cast<char>(guid.Data1 & 0xFF),
+            static_cast<char>((guid.Data1 >> 8) & 0xFF),
+            static_cast<char>((guid.Data1 >> 16) & 0xFF),
+            static_cast<char>((guid.Data1 >> 24) & 0xFF),
+            '\0'
+        };
+        return std::string(fourcc);
+    }
+    
 private:
     bool initialized_ = false;
 };
@@ -240,9 +213,6 @@ private:
  */
 int main(int argc, char* argv[]) {
 
-    system("logman create trace -n usbtrace -o lab\\lab6\\result\\usbtrace.etl -nb 128 640 -bs 128");
-    system("logman update trace -n usbtrace -p Microsoft-Windows-USB-UCX \"(Default,PartialDataBusTrace)\"");
-    
     // Initialize
     HRESULT hr = S_OK;
 
@@ -257,16 +227,8 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "[Info] 카메라를 찾았습니다.\n";
 
-    // get callback
-    auto callback = mf.getCallback();
-    if (!callback) {
-        std::cout << "[Error] IMFSourceReaderCallback을 생성할 수 없습니다.\n";
-        return -1;
-    }
-    std::cout << "[Info] IMFSourceReaderCallback을 생성했습니다.\n";
-
     // get source reader
-    auto source_reader = mf.getSourceReader(device.value(), callback.value(), config);
+    auto source_reader = mf.getSourceReader(device.value(), config);
     if (!source_reader) {
         std::cout << "[Error] IMFSourceReader를 생성할 수 없습니다.\n";
         return -1;
@@ -274,27 +236,10 @@ int main(int argc, char* argv[]) {
     std::cout << "[Info] IMFSourceReader를 생성했습니다.\n";
 
 
-    // 세션 시작
-    system("logman start -n usbtrace");
-
-
-    // get some Source
-    auto source = mf.getSource(source_reader.value(), config);
-    if (HFailed(source, "[Error] getSource를 실행할 수 없습니다.\n")) return -1;
-    std::cout << "[Info] getSource를 실행했습니다.\n";   
-
-    // end callback
-    std::this_thread::sleep_for(std::chrono::seconds(config.duration));
-    callback.value()->stop();
-
-    system("logman stop -n usbtrace");
-    system("logman delete -n usbtrace");
-
-    system("tracerpt \"lab\\lab6\\result\\usbtrace_000001.etl\" -o \"lab\\lab6\\result\\usbtrace.csv\" -of CSV");
-    system("xperf -i \"lab\\lab6\\result\\usbtrace_000001.etl\" -o \"lab\\lab6\\result\\decoded.csv\" -a dumper");
-
-
-    std::cout << "USB ETW tracing stopped and file saved." << std::endl;
+    /**
+     *  Run
+     */ 
+    mf.getMediaType(source_reader.value(), config);
 
     return 0;
 }

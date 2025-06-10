@@ -1,7 +1,11 @@
 ﻿#pragma once
 
 // Standard Library
+#include <array>
 #include <algorithm>
+#include <atomic>
+#include <cstddef>
+#include <cstdlib>
 #include <chrono>
 #include <fstream>
 #include <iostream>
@@ -29,6 +33,10 @@
 // Project
 #include "config.hpp"
 
+// using
+using namespace Microsoft::WRL;
+using Microsoft::WRL::ComPtr;
+
 
 /**
  *  Helper: Error Check
@@ -46,30 +54,20 @@ inline bool HFailed(HRESULT hr, const char* message) {
     return false;
 }
 
-inline bool CFailed(HRESULT hr, const char* message) {
-    if (FAILED(hr)) {
-        std::ostringstream oss;
-        oss << "[Error] " << message << " failed: 0x" << std::hex << hr << "\n";
-        
-        std::cout << oss.str();
-        std::cout << oss.str();
-        
-        return true;
-    }
-    return false;
-}
-
 
 /**
  *  Helper: Callback
  */
-using namespace Microsoft::WRL;
-
 class SampleCallback : public RuntimeClass<RuntimeClassFlags<ClassicCom>, IMFSourceReaderCallback> {
 public:
     // common
     STDMETHODIMP OnReadSample(HRESULT hrStatus, DWORD streamIndex, DWORD flags, LONGLONG llTimestamp, IMFSample* sample) override {
-        std::cout << "[Info] 수신 타임스탬프 (llTimestamp): " << llTimestamp << " (100ns 단위)\n";
+        if (end_) {
+            return S_OK;
+        }
+
+        frameCount_++;
+        std::cout << "[Info] Frame Count: " << frameCount_ << "\n";
 
         if (reader_) {
             reader_->ReadSample(MF_SOURCE_READER_FIRST_VIDEO_STREAM, 0, nullptr, nullptr, nullptr, nullptr);
@@ -84,20 +82,24 @@ public:
     void setReader(IMFSourceReader* reader) {
         reader_ = reader;
     }
+    void stop() {
+        end_ = true;
+    }
 
 private:
     IMFSourceReader* reader_ = nullptr;
+    std::atomic<bool> end_ = false;
+    std::atomic<int> frameCount_ = 0;
+
 };
 
 
 /**
  *  Helper: MediaFoundation
  */
-using Microsoft::WRL::ComPtr;
-
 class MediaFoundation {
 public:
-    // common
+    // initial
     MediaFoundation() {
         HRESULT hr = MFStartup(MF_VERSION);
 
@@ -236,6 +238,9 @@ private:
  *  Main
  */
 int main(int argc, char* argv[]) {
+
+    system("logman create trace -n usbtrace -o lab\\lab2\\result\\usbtrace.etl -nb 128 640 -bs 128");
+    system("logman update trace -n usbtrace -p Microsoft-Windows-USB-UCX \"(Default,PartialDataBusTrace)\"");
     
     // Initialize
     HRESULT hr = S_OK;
@@ -267,13 +272,28 @@ int main(int argc, char* argv[]) {
     }
     std::cout << "[Info] IMFSourceReader를 생성했습니다.\n";
 
+
+    // 세션 시작
+    system("logman start -n usbtrace");
+
+
     // get some Source
     auto source = mf.getSource(source_reader.value(), config);
     if (HFailed(source, "[Error] getSource를 실행할 수 없습니다.\n")) return -1;
     std::cout << "[Info] getSource를 실행했습니다.\n";   
 
-    // wait callback run
-    std::this_thread::sleep_for(std::chrono::seconds(30));
+    // end callback
+    std::this_thread::sleep_for(std::chrono::seconds(config.duration));
+    callback.value()->stop();
+
+    system("logman stop -n usbtrace");
+    system("logman delete -n usbtrace");
+
+    system("tracerpt \"lab\\lab2\\result\\usbtrace_000001.etl\" -o \"lab\\lab2\\result\\usbtrace.csv\" -of CSV");
+    system("xperf -i \"lab\\lab2\\result\\usbtrace_000001.etl\" -o \"lab\\lab2\\result\\decoded.csv\" -a dumper");
+
+
+    std::cout << "USB ETW tracing stopped and file saved." << std::endl;
 
     return 0;
 }
