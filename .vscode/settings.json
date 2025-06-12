@@ -79,6 +79,7 @@
         "complex": "cpp",
         "random": "cpp",
         "array": "cpp",
-        "cassert": "cpp"
+        "cassert": "cpp",
+        "barrier": "cpp"
     }
 }
