@@ -9,24 +9,13 @@
 #include <filesystem>
 #include <mfapi.h>
 
-
 struct WarmupConfig {
     bool enable_warmup = true;
     int hardware_stabilization_ms = 1500;
-    double target_fps_threshold = 0.95;
     int fps_monitoring_frames = 30;
     int stable_frames_required = 10;
     int max_fps_monitoring_ms = 3000;
-    int final_sync_delay_ms = 100;
 };
-
-struct CompressionConfig {
-    bool use_advanced_lossless = true;
-    std::string lossless_method = "h264";  // "h264", "h265", "ffv1"
-    bool preserve_color_space = true;      // yuv444p 사용
-    bool optimize_for_streaming = true;    // faststart 플래그
-};
-
 
 struct Config {
     std::vector<int> camera_indices = {0};
@@ -36,21 +25,12 @@ struct Config {
     std::string pixel_format = "MJPG";
     int record_duration = 10;
 
-    // path
     std::string ffmpeg = "ffmpeg";
-    std::string output = "output.avi";
-    
-    // 새 필드들 - 동기화 및 개별화
-    std::string output_dir = ".";          // CSV 파일 저장 디렉토리
+    std::string output_filename = "output.avi";  // 파일명만
+    std::string output_dir = ".";                // 모든 파일 저장 디렉토리
 
-    bool enable_compression = true;        // 압축 활성화
-    std::string compression_preset = "medium";  // 압축 속도 (ultrafast, fast, medium)
-    bool delete_original = true;          // 원본 파일 삭제 여부
-    std::string compressed_suffix = "_compressed";  // 압축 파일 접미사
-
-    // 새로 추가된 timing 설정들
-    int consumer_sleep_microseconds = 100; // Consumer loop sleep 시간 (마이크로초)
-    int sync_delay_milliseconds = 100;    // 동기화 시작 전 대기 시간 (밀리초)
+    int consumer_sleep_microseconds = 100;
+    int sync_delay_milliseconds = 100;
 
     WarmupConfig warmup;
 
@@ -89,10 +69,12 @@ struct Config {
             std::cerr << "[Config] Warmup 설정이 잘못되었습니다.\n";
             return false;
         }
-        
-        // 출력 디렉토리 생성
+
         try {
-            std::filesystem::create_directories(output_dir);
+            if (!std::filesystem::exists(output_dir)) {
+                std::filesystem::create_directories(output_dir);
+                std::cout << "[Config] 출력 디렉토리 생성: " << output_dir << "\n";
+            }
         } catch (const std::exception& e) {
             std::cerr << "[Config] 출력 디렉토리 생성 실패: " << e.what() << "\n";
             return false;
@@ -113,28 +95,24 @@ struct Config {
         std::cout << "  프레임 레이트: " << frame_rate << "\n";
         std::cout << "  픽셀 포맷: " << pixel_format << "\n";
         std::cout << "  녹화 시간: " << record_duration << "초\n";
-        std::cout << "  출력 파일: " << output << "\n";
+        std::cout << "  출력 파일명: " << output_filename << "\n";
         std::cout << "  출력 디렉토리: " << output_dir << "\n";
+        std::cout << "  전체 경로: " << getFullOutputPath() << "\n";
         std::cout << "  FFmpeg 경로: " << ffmpeg << "\n";
-        std::cout << "  압축 활성화: " << (enable_compression ? "활성화" : "비활성화") << "\n";
-        std::cout << "  압축 Preset: " << compression_preset << "\n";
-        std::cout << "  원본 삭제: " << (delete_original ? "활성화" : "비활성화") << "\n";
         std::cout << "  Consumer Sleep: " << consumer_sleep_microseconds << "μs\n";
         std::cout << "  동기화 Delay: " << sync_delay_milliseconds << "ms\n";
     }
     
-    // Helper 메서드들
     std::string generateCameraId(int camera_index) const {
         return "cam_" + std::to_string(camera_index);
     }
-    
-    std::string generateCsvPath(int camera_index) const {
-        return output_dir + "/timestamps_" + generateCameraId(camera_index) + ".csv";
+
+    std::string getFullOutputPath() const {
+        std::filesystem::path fullPath = std::filesystem::path(output_dir) / output_filename;
+        return fullPath.string();
     }
 };
 
-
-// helper
 std::vector<int> parseIntList(const std::string& str) {
     std::vector<int> result;
     std::stringstream ss(str);
@@ -161,12 +139,10 @@ Config parse_args(int argc, char* argv[]) {
         { "--frame_rate",   [&](const std::string& v) { config.frame_rate = std::stoi(v); } },
         { "--record_duration",   [&](const std::string& v) { config.record_duration = std::stoi(v); } },
         { "--pixel_format",   [&](const std::string& v) { config.pixel_format = v; } },
-        { "--output",   [&](const std::string& v) { config.output = v; } },
+        { "--output_filename",   [&](const std::string& v) { config.output_filename = v; } },
+        { "--output",   [&](const std::string& v) { config.output_filename = v; } },  // 호환성
         { "--output_dir",   [&](const std::string& v) { config.output_dir = v; } },
         { "--ffmpeg",   [&](const std::string& v) { config.ffmpeg = v; } },
-        { "--enable_compression", [&](const std::string& v) { config.enable_compression = (v == "true" || v == "1"); } },
-        { "--compression_preset", [&](const std::string& v) { config.compression_preset = v; } },
-        { "--delete_original", [&](const std::string& v) { config.delete_original = (v == "true" || v == "1"); } },
         { "--consumer_sleep", [&](const std::string& v) { config.consumer_sleep_microseconds = std::stoi(v); } },
         { "--sync_delay", [&](const std::string& v) { config.sync_delay_milliseconds = std::stoi(v); } },
     };
@@ -201,22 +177,24 @@ std::vector<Config> createMultiCameraConfigs(const Config& baseConfig) {
     for (size_t i = 0; i < baseConfig.camera_indices.size(); ++i) {
         Config cameraConfig = baseConfig;
         
-        // 단일 카메라 인덱스 설정 (SingleManager에서 사용하기 위해)
+        // 단일 카메라 인덱스 설정
         cameraConfig.camera_indices = {baseConfig.camera_indices[i]};
         
-        // 출력 파일명 개별화
+        // 멀티카메라인 경우 파일명 개별화
         if (baseConfig.camera_indices.size() > 1) {
             std::string extension = ".avi";
-            std::string baseName = baseConfig.output;
+            std::string baseName = baseConfig.output_filename;
             
-            // 확장자 제거
+            // 확장자 분리
             size_t dotPos = baseName.find_last_of('.');
             if (dotPos != std::string::npos) {
                 extension = baseName.substr(dotPos);
                 baseName = baseName.substr(0, dotPos);
             }
             
-            cameraConfig.output = baseName + "_camera_" + std::to_string(baseConfig.camera_indices[i]) + extension;
+            // 카메라 번호 추가
+            cameraConfig.output_filename = baseName + "_camera_" + 
+                std::to_string(baseConfig.camera_indices[i]) + extension;
         }
         
         configs.push_back(cameraConfig);
