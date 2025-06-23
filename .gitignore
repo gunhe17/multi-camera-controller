@@ -16,6 +16,7 @@ output/
 *.mp4
 *.avi
 *.csv
+*.jpg
 
 # macOS 관련
 .DS_Store
