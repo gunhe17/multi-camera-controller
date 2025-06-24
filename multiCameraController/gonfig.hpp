@@ -10,7 +10,7 @@
 #include <iomanip>
 #include <mfapi.h>
 
-#include "error/error.hpp"
+#include "error/config_error.hpp"
 
 /**
  * class: Config
@@ -35,7 +35,7 @@ public:
     
     // Warmup settings
     bool enable_warmup = true;
-    int warmup_duration = 5;
+    int warmup_duration = 3;
     
     // Output settings
     enum class OutputMode { VIDEO, IMAGE };
@@ -45,7 +45,6 @@ public:
     std::string video_format = "avi";
     std::string image_format = "jpg";
     bool save_timestamp_csv = true;
-
 
     // method
     bool validate() {
@@ -123,12 +122,15 @@ public:
         std::cout << "  녹화 시간: " << record_duration << "초\n";
         std::cout << "  동기화 Delay: " << sync_delay_milliseconds << "ms\n";
         
+        // Warmup settings
+        std::cout << "  Warmup 활성화: " << (enable_warmup ? "ON" : "OFF") << "\n";
+        std::cout << "  Warmup 시간: " << warmup_duration << "초\n";
+        
         // Output settings
         std::cout << "  출력 모드: " << (output_mode == OutputMode::VIDEO ? "VIDEO" : "IMAGE") << "\n";
         std::cout << "  출력 디렉토리: " << output_directory << "\n";
         
         if (output_mode == OutputMode::VIDEO) {
-            std::cout << "  비디오 폴더: " << output_directory << "\n";
             std::cout << "  비디오 파일: " << output_filename << "\n";
             std::cout << "  비디오 포맷: " << video_format << "\n";
         } else {
@@ -152,65 +154,148 @@ public:
     static Config parseArgs(int argc, char* argv[]) {
         Config config;
         
+        // 핸들러 맵 정의 - 모든 설정 파라미터 포함
         std::unordered_map<std::string, std::function<void(const std::string&)>> handlers = {
+            // ===================
             // Camera settings
+            // ===================
             {"--camera_indices", [&](const std::string& v) { 
-                config.camera_indices = _parseIntList(v); }},
+                config.camera_indices = _parseIntList(v); 
+            }},
             {"--frame_width", [&](const std::string& v) { 
-                config.frame_width = std::stoi(v); }},
+                int value = std::stoi(v);
+                if (value <= 0) throw std::invalid_argument("frame_width must be positive");
+                config.frame_width = value; 
+            }},
             {"--frame_height", [&](const std::string& v) { 
-                config.frame_height = std::stoi(v); }},
+                int value = std::stoi(v);
+                if (value <= 0) throw std::invalid_argument("frame_height must be positive");
+                config.frame_height = value; 
+            }},
             {"--frame_rate", [&](const std::string& v) { 
-                config.frame_rate = std::stoi(v); }},
+                int value = std::stoi(v);
+                if (value <= 0) throw std::invalid_argument("frame_rate must be positive");
+                config.frame_rate = value; 
+            }},
             {"--pixel_format", [&](const std::string& v) { 
-                config.pixel_format = v; }},
+                // 지원되는 포맷 검증
+                if (v != "MJPG" && v != "NV12" && v != "YUY2" && 
+                    v != "RGB32" && v != "I420" && v != "UYVY") {
+                    throw std::invalid_argument("Unsupported pixel format: " + v);
+                }
+                config.pixel_format = v; 
+            }},
             
+            // ===================
             // Recording settings
+            // ===================
             {"--record_duration", [&](const std::string& v) { 
-                config.record_duration = std::stoi(v); }},
+                int value = std::stoi(v);
+                if (value <= 0) throw std::invalid_argument("record_duration must be positive");
+                config.record_duration = value; 
+            }},
             {"--consumer_sleep", [&](const std::string& v) { 
-                config.consumer_sleep_microseconds = std::stoi(v); }},
+                int value = std::stoi(v);
+                if (value <= 0) throw std::invalid_argument("consumer_sleep must be positive");
+                config.consumer_sleep_microseconds = value; 
+            }},
             {"--sync_delay", [&](const std::string& v) { 
-                config.sync_delay_milliseconds = std::stoi(v); }},
+                int value = std::stoi(v);
+                if (value < 0) throw std::invalid_argument("sync_delay cannot be negative");
+                config.sync_delay_milliseconds = value; 
+            }},
             
+            // ===================
+            // Warmup settings
+            // ===================
+            {"--enable_warmup", [&](const std::string& v) { 
+                config.enable_warmup = _parseBool(v); 
+            }},
+            {"--warmup_duration", [&](const std::string& v) { 
+                int value = std::stoi(v);
+                if (value <= 0) throw std::invalid_argument("warmup_duration must be positive");
+                config.warmup_duration = value; 
+            }},
+            
+            // ===================
             // Output settings
+            // ===================
             {"--output_mode", [&](const std::string& v) { 
-                config.output_mode = (v == "images") ? 
-                    Config::OutputMode::IMAGE : Config::OutputMode::VIDEO; }},
+                std::string mode = _toLowercase(v);
+                if (mode == "video" || mode == "vid" || mode == "v") {
+                    config.output_mode = Config::OutputMode::VIDEO;
+                } else if (mode == "image" || mode == "images" || mode == "img" || mode == "i") {
+                    config.output_mode = Config::OutputMode::IMAGE;
+                } else {
+                    throw std::invalid_argument("Invalid output mode: " + v + " (use 'video' or 'image')");
+                }
+            }},
             {"--output_filename", [&](const std::string& v) { 
-                config.output_filename = v; }},
+                if (v.empty()) throw std::invalid_argument("output_filename cannot be empty");
+                config.output_filename = v; 
+            }},
             {"--output", [&](const std::string& v) { 
-                config.output_filename = v; }},  // 호환성
+                if (v.empty()) throw std::invalid_argument("output cannot be empty");
+                config.output_filename = v; // 호환성
+            }},
+            {"--output_directory", [&](const std::string& v) { 
+                if (v.empty()) throw std::invalid_argument("output_directory cannot be empty");
+                config.output_directory = v; 
+            }},
             {"--output_dir", [&](const std::string& v) { 
-                config.output_directory = v; }},
-            {"--image_format", [&](const std::string& v) { 
-                config.image_format = v; }},
+                if (v.empty()) throw std::invalid_argument("output_dir cannot be empty");
+                config.output_directory = v; 
+            }},
             {"--video_format", [&](const std::string& v) { 
-                config.video_format = v; }},
+                if (v.empty()) throw std::invalid_argument("video_format cannot be empty");
+                config.video_format = v; 
+            }},
+            {"--image_format", [&](const std::string& v) { 
+                if (v.empty()) throw std::invalid_argument("image_format cannot be empty");
+                config.image_format = v; 
+            }},
+            {"--save_timestamp_csv", [&](const std::string& v) { 
+                config.save_timestamp_csv = _parseBool(v); 
+            }},
             
+            // ===================
             // External tools
+            // ===================
+            {"--ffmpeg_path", [&](const std::string& v) { 
+                if (v.empty()) throw std::invalid_argument("ffmpeg_path cannot be empty");
+                config.ffmpeg_path = v; 
+            }},
             {"--ffmpeg", [&](const std::string& v) { 
-                config.ffmpeg_path = v; }},
+                if (v.empty()) throw std::invalid_argument("ffmpeg cannot be empty");
+                config.ffmpeg_path = v; 
+            }},
         };
 
+        // 인자 파싱
         for (int i = 1; i < argc; i += 2) {
             if (i + 1 >= argc) {
                 throw ConfigInputError("값이 누락된 인자: " + std::string(argv[i]));
             }
 
-            // is valid key
             std::string key = argv[i];
-            auto handler = handlers.find(key);
-            if (handler == handlers.end()) {
-                throw ConfigInputError("알 수 없는 인자: " + key);
+            std::string value = argv[i + 1];
+
+            // 핸들러 찾기
+            auto handler_it = handlers.find(key);
+            if (handler_it == handlers.end()) {
+                throw ConfigInputError("알 수 없는 인자: " + key + 
+                    "\n사용 가능한 인자들:\n" + _getUsageString());
             }
             
-            // is valid value
-            std::string value = argv[i + 1];
+            // 값 파싱 및 설정
             try {
-                handler->second(value);
-            } catch (const std::exception& e) {
+                handler_it->second(value);
+            } catch (const std::invalid_argument& e) {
                 throw ConfigInputError("인자 파싱 실패 (" + key + "): " + e.what());
+            } catch (const std::out_of_range& e) {
+                throw ConfigInputError("인자 범위 오류 (" + key + "): " + e.what());
+            } catch (const std::exception& e) {
+                throw ConfigInputError("인자 처리 실패 (" + key + "): " + e.what());
             }
         }
 
@@ -219,19 +304,89 @@ public:
 
 private:
     static std::vector<int> _parseIntList(const std::string& str) {
+        if (str.empty()) {
+            throw std::invalid_argument("정수 리스트가 비어있습니다");
+        }
+        
         std::vector<int> result;
         std::stringstream ss(str);
         std::string item;
         
         while (std::getline(ss, item, ',')) {
+            // 공백 제거
+            item.erase(0, item.find_first_not_of(" \t"));
+            item.erase(item.find_last_not_of(" \t") + 1);
+            
+            if (item.empty()) continue;
+            
             try {
-                result.push_back(std::stoi(item));
-            } catch (const std::exception&) {
-                std::cerr << "[Warning] 잘못된 숫자 형식: " << item << "\n";
+                int value = std::stoi(item);
+                if (value < 0) {
+                    throw std::invalid_argument("카메라 인덱스는 음수일 수 없습니다: " + item);
+                }
+                result.push_back(value);
+            } catch (const std::invalid_argument&) {
+                throw std::invalid_argument("잘못된 숫자 형식: " + item);
+            } catch (const std::out_of_range&) {
+                throw std::invalid_argument("숫자 범위 초과: " + item);
             }
         }
         
+        if (result.empty()) {
+            throw std::invalid_argument("유효한 카메라 인덱스가 없습니다");
+        }
+        
         return result;
+    }
+    
+    static bool _parseBool(const std::string& str) {
+        std::string lower = _toLowercase(str);
+        
+        if (lower == "true" || lower == "1" || lower == "on" || 
+            lower == "yes" || lower == "y" || lower == "enable") {
+            return true;
+        } else if (lower == "false" || lower == "0" || lower == "off" || 
+                   lower == "no" || lower == "n" || lower == "disable") {
+            return false;
+        } else {
+            throw std::invalid_argument("잘못된 불린 값: " + str + 
+                " (true/false, 1/0, on/off, yes/no, enable/disable 사용)");
+        }
+    }
+    
+    static std::string _toLowercase(const std::string& str) {
+        std::string result = str;
+        std::transform(result.begin(), result.end(), result.begin(), ::tolower);
+        return result;
+    }
+    
+    static std::string _getUsageString() {
+        return R"(카메라 설정:
+  --camera_indices               카메라 인덱스 (예: 0,1,2)
+  --frame_width                  프레임 너비 (기본값: 1280)
+  --frame_height                 프레임 높이 (기본값: 720)
+  --frame_rate                   프레임 레이트 (기본값: 30)
+  --pixel_format                 픽셀 포맷 (MJPG, NV12, YUY2, RGB32, I420, UYVY)
+
+녹화 설정:
+  --record_duration              녹화 시간(초) (기본값: 5)
+  --consumer_sleep               컨슈머 슬립(μs) (기본값: 100)
+  --sync_delay                   동기화 딜레이(ms) (기본값: 100)
+
+웜업 설정:
+  --enable_warmup                웜업 활성화 (true/false, 기본값: true)
+  --warmup_duration              웜업 시간(초) (기본값: 3)
+
+출력 설정:
+  --output_mode                  출력 모드 (video/image, 기본값: image)
+  --output_filename, --output    출력 파일명 (기본값: output)
+  --output_directory, --output_dir 출력 디렉토리 (기본값: .)
+  --video_format                 비디오 포맷 (기본값: avi)
+  --image_format                 이미지 포맷 (기본값: jpg)
+  --save_timestamp_csv           CSV 저장 (true/false, 기본값: true)
+
+외부 도구:
+  --ffmpeg_path, --ffmpeg        FFmpeg 경로 (기본값: ffmpeg))";
     }
 };
 
@@ -251,10 +406,32 @@ public:
     Config config(int argc, char* argv[]) {
         Config config;
         
-        config = ConfigParser::parseArgs(argc, argv);
-            
-        config.validate();    
-        config.print();
+        try {
+            config = ConfigParser::parseArgs(argc, argv);
+            config.validate();    
+            config.print();
+        } catch (const ConfigInputError& e) {
+            std::cerr << "[Config Error] 입력 오류: " << e.what() << "\n";
+            throw;
+        } catch (const ConfigCameraError& e) {
+            std::cerr << "[Config Error] 카메라 설정 오류: " << e.what() << "\n";
+            throw;
+        } catch (const ConfigRecordingError& e) {
+            std::cerr << "[Config Error] 녹화 설정 오류: " << e.what() << "\n";
+            throw;
+        } catch (const ConfigWarmupError& e) {
+            std::cerr << "[Config Error] 웜업 설정 오류: " << e.what() << "\n";
+            throw;
+        } catch (const ConfigOutputError& e) {
+            std::cerr << "[Config Error] 출력 설정 오류: " << e.what() << "\n";
+            throw;
+        } catch (const ConfigExternalError& e) {
+            std::cerr << "[Config Error] 외부 도구 오류: " << e.what() << "\n";
+            throw;
+        } catch (const std::exception& e) {
+            std::cerr << "[Config Error] 예상치 못한 오류: " << e.what() << "\n";
+            throw;
+        }
             
         return config;
     }

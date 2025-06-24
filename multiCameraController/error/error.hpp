@@ -5,20 +5,14 @@
 #include <windows.h>
 
 
-/**
- * Config
- */
-
-// Parent
-
-class ConfigError : public std::runtime_error {
+class Error : public std::runtime_error {
 public:
-    ConfigError(
+    Error(
         const std::string& type, 
         const std::string& msg, 
         int code
     ): 
-        std::runtime_error("[ Config Error] " + type + ": " + msg + " (code: " + std::to_string(code) + ")"),
+        std::runtime_error("[Error] " + type + ": " + msg + " (code: " + std::to_string(code) + ")"),
         type_(type), 
         message_(msg), 
         code_(code) 
@@ -34,41 +28,65 @@ private:
     int code_;
 };
 
-
-// Child
-
-class ConfigInputError: public ConfigError {
+/**
+ * @class: MediaFoundation
+ */
+class MediaFoundationError: public Error {
 public:
-    ConfigInputError(const std::string& msg, int code = 400)
-        : ConfigError("InputError", msg, code) {}
+    MediaFoundationError(const std::string& msg, int code = 400)
+        : Error("MediaFoundationError", msg, code) {}
 };
 
-class ConfigCameraError : public ConfigError {
+/**
+ * @class: Callback
+ */
+class CallbackError: public Error {
 public:
-    ConfigCameraError(const std::string& msg, int code = 400)
-        : ConfigError("CameraError", msg, code) {}
+    CallbackError(const std::string& msg, int code = 400)
+        : Error("CallbackError", msg, code) {}
 };
 
-class ConfigRecordingError : public ConfigError {
+/**
+ * @class: Sampler
+ */
+class SamplerError: public Error {
 public:
-    ConfigRecordingError(const std::string& msg, int code = 400)
-        : ConfigError("RecordingError", msg, code) {}
+    SamplerError(const std::string& msg, int code = 400)
+        : Error("SamplerError", msg, code) {}
 };
 
-class ConfigExternalError : public ConfigError {
+/**
+ * @class: MediaMaker
+ */
+class MediaMakerError : public Error {
 public:
-    ConfigExternalError(const std::string& msg, int code = 400)
-        : ConfigError("ExternalError", msg, code) {}
+    MediaMakerError(const std::string& msg, int code = 700)
+        : Error("MediaMakerError", msg, code) {}
 };
 
-class ConfigWarmupError : public ConfigError {
+/**
+ * @class: CSVMaker
+ */
+class CSVMakerError : public Error {
 public:
-    ConfigWarmupError(const std::string& msg, int code = 400)
-        : ConfigError("WarmupError", msg, code) {}
+    CSVMakerError(const std::string& msg, int code = 800)
+        : Error("CSVMakerError", msg, code) {}
 };
 
-class ConfigOutputError : public ConfigError {
+/**
+ * @class: Manager
+ */
+class ManagerError : public Error {
 public:
-    ConfigOutputError(const std::string& msg, int code = 400)
-        : ConfigError("OutputError", msg, code) {}
+    ManagerError(const std::string& msg, int code = 900)
+        : Error("ManagerError", msg, code) {}
+};
+
+/**
+ * @class: MultiManager
+ */
+class MultiManagerError : public Error {
+public:
+    MultiManagerError(const std::string& msg, int code = 1000)
+        : Error("MultiManagerError", msg, code) {}
 };

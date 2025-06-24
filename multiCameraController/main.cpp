@@ -58,7 +58,6 @@ using COMPtr = std::unique_ptr<T, COMDeleter>;
  * @class: Buffer
  */
 
-// TODO: on config?
 struct BufferData {
     // sample
     ComPtr<IMFSample> sample_;
@@ -67,7 +66,6 @@ struct BufferData {
     LONGLONG mf_ts_;
 
     BufferData() {
-        
     }
 
     BufferData(
@@ -80,7 +78,6 @@ struct BufferData {
         mf_ts_ = mf_ts;
     }
 };
-
 constexpr std::size_t RING_BUFFER_SIZE = 1024;
 template <typename T, std::size_t N>
 class Buffer {
@@ -94,18 +91,6 @@ public:
     
 /** methods */
 public:
-    // monitor
-    constexpr std::size_t capacity() const noexcept { 
-        return N;
-    }
-    std::size_t size() const noexcept {
-        return m_tail.load(std::memory_order_acquire) - m_head.load(std::memory_order_acquire);
-    }
-    bool empty() const noexcept {
-        return m_head.load(std::memory_order_acquire) == m_tail.load(std::memory_order_acquire);
-    }
-
-    // helper
     bool enqueue(T val) noexcept {
         std::size_t current_tail = m_tail.load(std::memory_order_relaxed);
         if (current_tail - m_head.load(std::memory_order_acquire) < N) {
@@ -113,6 +98,9 @@ public:
             m_tail.store(current_tail + 1, std::memory_order_release);
             return true;
         }
+
+        // is failed
+        std::cout << "[Buffer Warning] Buffer가 overflow 되었습니다.\n";
         return false;
     }
 
@@ -127,7 +115,8 @@ public:
             return std::optional<T>(std::move(value));
         }
 
-        // TODO: 중단할 수 없는 오류
+        // is failed
+        // std::cout << "[Buffer Warning] Buffer가 underflow 되었습니다.\n";
         return std::nullopt;
     }
 };
@@ -145,7 +134,7 @@ private:
 public:
     MediaFoundation() {
         HRESULT hr = MFStartup(MF_VERSION);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         initialized_ = true;
     }
@@ -182,16 +171,16 @@ private:
         // every devices
         ComPtr<IMFAttributes> every_attributes;
         hr = MFCreateAttributes(&every_attributes, 1);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         hr = every_attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         IMFActivate** every_devices_raw = nullptr;
         UINT32 every_count = 0;
 
         hr = MFEnumDeviceSources(every_attributes.Get(), &every_devices_raw, &every_count);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         COMPtr<IMFActivate*> every_devices(every_devices_raw);
 
@@ -200,25 +189,25 @@ private:
         ComPtr<IMFAttributes> video_attributes;
 
         hr = MFCreateAttributes(&video_attributes, 1);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
 
         hr = video_attributes->SetGUID(MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
 
         IMFActivate** video_devices_raw = nullptr;
         UINT32 video_count = 0;
 
         hr = MFEnumDeviceSources(video_attributes.Get(), &video_devices_raw, &video_count);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         COMPtr<IMFActivate*> video_devices(video_devices_raw);
 
 
         // check
         int camera_index = index;
-        if (camera_index >= static_cast<int>(every_count)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (camera_index >= static_cast<int>(every_count)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
 
         IMFActivate* target_device = every_devices_raw[camera_index];
         ComPtr<IMFActivate> device = target_device;
@@ -231,7 +220,7 @@ private:
                 return SUCCEEDED(target_device->Compare(video_dev, MF_ATTRIBUTES_MATCH_INTERSECTION, &match)) && match;
             }
         );
-        if (!is_valid) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (!is_valid) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
 
         return device;
     }
@@ -251,19 +240,19 @@ private:
         ComPtr<IMFMediaType> pType;
         
         hr = device->ActivateObject(IID_PPV_ARGS(&pSource));
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         hr = MFCreateAttributes(&pAttributes, 1);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         hr = pAttributes->SetUnknown(MF_SOURCE_READER_ASYNC_CALLBACK, callback.Get());
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
-        
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
+
         hr = MFCreateSourceReaderFromMediaSource(pSource.Get(), pAttributes.Get(), &pSourceReader);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
-        
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
+
         hr = MFCreateMediaType(&pType);
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         pType->SetGUID(MF_MT_SUBTYPE, _format(gonfig.pixel_format));
         pType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video);
@@ -273,7 +262,7 @@ private:
         MFSetAttributeRatio(pType.Get(), MF_MT_FRAME_RATE, gonfig.frame_rate, 1);
 
         hr = pSourceReader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, NULL, pType.Get());
-        if (FAILED(hr)) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (FAILED(hr)) throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         return pSourceReader;
     }
@@ -286,7 +275,7 @@ private:
         if (format == "UYVY")  return MFVideoFormat_UYVY;
         
         // TODO: 존재하지 않는 경우에 대한 오류
-        throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        throw MediaFoundationError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
     }
 };
 
@@ -312,13 +301,13 @@ public:
         auto ts = std::chrono::system_clock::now();
 
         if (FAILED(hrStatus)) {
-            std::cout << "OnReadSample failed with HR: " << std::hex << hrStatus << "\n";
+            std::cout << "[Callback Warning] Sample을 읽을 수 없습니다. (" << std::hex << hrStatus << std::dec << ")\n";
             next();
             return S_OK;
         }
         
         if (!sample) {
-            std::cout << "Sample is null\n";
+            std::cout << "[Callback Warning] Sample이 비어있습니다.\n";
             next();
             return S_OK;
         }
@@ -332,7 +321,6 @@ public:
         );
 
         next();
-
         return S_OK;
     }
     STDMETHODIMP OnEvent(DWORD, IMFMediaEvent*) override { return S_OK; }
@@ -392,7 +380,7 @@ public:
 public:
     void warmup() {
         // status
-        if (state_ != State::STOPPED) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));  
+        if (state_ != State::STOPPED) throw MediaMakerError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));  
         state_ = State::STARTING;
         
         // run
@@ -447,12 +435,22 @@ private:
     void writeImage(const BYTE* data, size_t size) {
         std::ofstream file(_filename(), std::ios::binary);
 
-        if (file.is_open()) {
-            file.write(reinterpret_cast<const char*>(data), size);
-            file.close();
+        bool is_open = file.is_open();
 
-            std::cout << image_index_ << "is created\n";
+        if (!is_open) {
+            std::cout << "[MediaMaker Warning] Image file open failed for camera " << camera_id_ << ": " << _filename() << "\n";
+            return;
         }
+
+        file.write(reinterpret_cast<const char*>(data), size);
+        
+        if (file.fail()) {
+            std::cout << "[MediaMaker Warning] Image write failed for camera " << camera_id_ << " at index " << image_index_ << "\n";
+        } else {
+            std::cout << "[MediaMaker] Image " << image_index_ << " created for camera " << camera_id_ << "\n";
+        }
+
+        file.close();
     }
 
     std::string _filename() {
@@ -486,9 +484,12 @@ private:
     void writeVideo(const BYTE* data, size_t size) {
         DWORD written = 0;
 
-        WriteFile(
+        BOOL result = WriteFile(
             write_handle_, data, static_cast<DWORD>(size), &written, NULL
         );
+        if (!result || written != size) {
+            std::cout << "[MediaMaker Warning] Video write failed for camera " << camera_id_ << ", expected: " << size << ", written: " << written << "\n";
+        }
     }
 
     bool _createPipe() {
@@ -498,8 +499,7 @@ private:
 
         bool pipe = CreatePipe(&readHandle, &writeHandle, &sa, 0);
         if (!pipe) {
-            //pipe 생성 실패
-            throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+            throw MediaMakerError("Pipe creation failed", GetLastError());
         }
 
         read_handle_ = readHandle;
@@ -533,8 +533,7 @@ private:
         
         BOOL process = CreateProcessA(NULL, const_cast<LPSTR>(command.c_str()), NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi);
         if (!process) {
-            //process 생성 실패
-            throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+            throw MediaMakerError("FFmpeg process creation failed", GetLastError());
         }
 
         ffmpeg_proc_ = pi.hProcess;
@@ -601,7 +600,9 @@ public:
 public:
     void warmup() {
         // status
-        if (state_ != State::STOPPED) throw std::runtime_error("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        if (state_ != State::STOPPED) {
+            throw CSVMakerError("Invalid state: not SETTING_UP at " __FILE__ ":" + std::to_string(__LINE__));
+        }
         state_ = State::STARTING;
         
         // run
@@ -612,9 +613,10 @@ public:
             ".csv";
         
         file_.open(filename);
-        if (!file_.is_open()) throw std::runtime_error("CSV 파일 생성 실패: " + filename);
+        if (!file_.is_open()) throw CSVMakerError("CSV 파일 생성 실패: " + filename);
         
         file_ << "FrameIndex,Timestamp100ns,TimestampMs,WallClockTime,CameraID\n";
+        if (file_.fail()) throw CSVMakerError("CSV 헤더 쓰기 실패");
 
         // status
         state_ = State::RUNNING;
@@ -636,16 +638,14 @@ public:
 
     // unique
     void write(const BufferData& sample_data) {
-        std::cout << "[CSVMaker] Writing data for camera " << camera_id_ << " is gate open? " << is_gate_open_ << "\n";
-
         if (!is_gate_open_) return;
 
         std::lock_guard<std::mutex> lock(file_mutex_);
 
-        std::cout << "[CSVMaker] Writing data for camera " << camera_id_ << " at index " << image_index_ << "\n";
-        if (!file_.is_open()) return;
-
-        image_index_++;
+        if (!file_.is_open()) {
+            std::cout << "[CSVMaker Warning] File not open for camera " << camera_id_ << "\n";
+            return;
+        }
 
         double timestamp_ms = sample_data.mf_ts_ / 10000.0;
         std::string wall_clock_str = _wallclock(sample_data.sys_time_);
@@ -658,6 +658,8 @@ public:
             << camera_id_ << "\n";
 
         file_.flush();
+
+        image_index_++;
     }
 private:
     std::string _wallclock(const std::chrono::system_clock::time_point& tp) {
@@ -733,6 +735,7 @@ public:
         while (running_flag_.load()) {
             auto inbuffer = buffer_->dequeue();
             if (!inbuffer) {
+                // buffer의 dequeue에서 exception 처리
                 std::this_thread::sleep_for(std::chrono::microseconds(gonfig.consumer_sleep_microseconds));
                 continue;
             }
@@ -753,11 +756,13 @@ public:
         DWORD maxLength = 0, currentLength = 0;
         BYTE* data = nullptr;
 
-        HRESULT hr = sample->ConvertToContiguousBuffer(&buffer);
-        if (FAILED(hr)) throw std::runtime_error("ConvertToContiguousBuffer failed");
+        HRESULT hr;
 
+        hr = sample->ConvertToContiguousBuffer(&buffer);
+        if (FAILED(hr)) throw SamplerError("ConvertToContiguousBuffer failed at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
+        
         hr = buffer->Lock(&data, &maxLength, &currentLength);
-        if (FAILED(hr)) throw std::runtime_error("Lock failed");
+        if (FAILED(hr)) throw SamplerError("Lock failed at " __FILE__ ":" + std::to_string(__LINE__) + "\n" + std::to_string(hr) + "\n");
 
         return { data, currentLength, buffer };
     }
@@ -999,18 +1004,31 @@ public:
 public:
     // common
     void setup() {
-        // manager
-        for (int index : gonfig.camera_indices) {
-            _manager(index);
+        try {
+            for (int index : gonfig.camera_indices) {
+                _manager(index);
+            }
+
+            for (int i = 0; i < NUM_STAGES; ++i) {
+                _barrier();
+            }
+            
+        } catch (const ManagerError& e) {
+            throw MultiManagerError("Manager creation failed: " + e.getMessage(), 1002);
+        } catch (const std::bad_alloc&) {
+            throw MultiManagerError("Memory allocation failed during setup", 1003);
         }
 
-        // barrier
-        for (int i = 0; i < NUM_STAGES; ++i) {
-            _barrier();
+        if (managers_.empty() || barriers_.empty()) {
+            throw MultiManagerError("Setup incomplete: managers or barriers not created", 1004);
         }
     }
 
-    void run() {        
+    void run() {
+        if (managers_.empty()) {
+            throw MultiManagerError("No managers available for execution", 1005);
+        }
+
         for (size_t i = 0; i < managers_.size(); ++i) {
             threads_.emplace_back([this, i]() {
                 try {
@@ -1074,16 +1092,21 @@ private:
     
     // Run
     void _coordinate() {
-        barriers_[INIT]->arrive_and_wait();
+        try {
+            barriers_[INIT]->arrive_and_wait();
 
-        barriers_[SETUP]->arrive_and_wait();
+            barriers_[SETUP]->arrive_and_wait();
 
-        barriers_[WARMUP]->arrive_and_wait(); 
+            barriers_[WARMUP]->arrive_and_wait();
 
-        barriers_[RUN]->arrive_and_wait();
-        _run();
-
-        barriers_[END]->arrive_and_wait();
+            barriers_[RUN]->arrive_and_wait();
+            _run();
+            
+            barriers_[END]->arrive_and_wait();
+            
+        } catch (const std::exception& e) {
+            throw MultiManagerError("Coordination failed: " + std::string(e.what()), 1007);
+        }
     }
 
     // run
@@ -1144,7 +1167,7 @@ int main(int argc, char* argv[]) {
         multiManager.run();
 
     } catch (const std::exception& e) {
-        std::cout << "Exception: " << e.what() << std::endl;
+        std::cout << e.what() << std::endl;
     }
     
     // Windows COM
