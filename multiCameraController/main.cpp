@@ -993,6 +993,10 @@ private:
 
     // state
     std::atomic<bool> record_signal_{false};
+    
+    // stop
+    std::atomic<bool> stop_signal_{false};
+    std::thread stop_thread_;
 public:
     MultiManager() {
         managers_.clear();
@@ -1029,6 +1033,10 @@ public:
             throw MultiManagerError("No managers available for execution", 1005);
         }
 
+        stop_thread_ = std::thread([this]() {
+            _stopStdin();
+        });
+
         for (size_t i = 0; i < managers_.size(); ++i) {
             threads_.emplace_back([this, i]() {
                 try {
@@ -1052,9 +1060,13 @@ public:
 
                     // 4th
                     barriers_[RUN]->arrive_and_wait();
-                    while (!record_signal_.load()) timer_.microSl(10);
-                    
-                    manager.run();
+                    while (!record_signal_.load() && !stop_signal_.load()) {
+                        timer_.microSl(10);
+                    }
+
+                    if (!stop_signal_.load()) {
+                        manager.run();
+                    }
 
                     // 5th
                     barriers_[END]->arrive_and_wait();
@@ -1065,15 +1077,28 @@ public:
                 };
             });
         }
-        
+
+        // Coordinator
         std::thread coordinator_thread([this]() {
             _coordinate();
         });
-        
         coordinator_thread.join();
-        for (auto& thread : threads_) {
-            thread.join();
+
+        // Stop
+        stop_signal_.store(true);
+
+        if (stop_thread_.joinable()) {
+            stop_thread_.detach();
         }
+
+        // Thread
+        for (auto& thread : threads_) {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+        
+        std::cout << "[MultiManager] 모든 스레드가 종료되었습니다.\n";
     }
 
 private:
@@ -1117,7 +1142,7 @@ private:
         // record start
         record_signal_.store(true);
 
-        while (Timer::Clock::now() < end) {
+        while (Timer::Clock::now() < end && !stop_signal_.load()) {
             auto remaining = end - Timer::Clock::now();
             
             if (remaining > std::chrono::milliseconds(10)) {
@@ -1139,6 +1164,22 @@ private:
             << actual_duration << "μs (" 
             << std::fixed << std::setprecision(6) 
             << actual_duration / 1000000.0 << "초)\n";
+    }
+
+    // stop
+    void _stopStdin() {
+        std::string line;
+        while (!stop_signal_.load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            if (std::cin.rdbuf()->in_avail() > 0) {
+                std::getline(std::cin, line);
+                if (line == "stop") {
+                    stop_signal_.store(true);
+                    break;
+                }
+            }
+        }
     }
 };
 
@@ -1169,7 +1210,9 @@ int main(int argc, char* argv[]) {
     } catch (const std::exception& e) {
         std::cout << e.what() << std::endl;
     }
-    
+
     // Windows COM
     CoUninitialize();
+    
+    return 0;
 }
