@@ -5,7 +5,8 @@
             "includePath": [
                 "${workspaceFolder}/multiCameraController",
                 "C:/Users/user/Workspace/ETW/EtwEnumerator/include",
-                "C:/Users/user/Workspace/TobiiPro/64/include"
+                "C:/Users/user/Workspace/TobiiPro/64/include",
+                "C:/Users/user/Workspace/TobiiPro/64/lib"
             ],
             "defines": [
                 "_DEBUG",
