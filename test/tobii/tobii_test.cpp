@@ -1,4 +1,4 @@
-#include <iostream>
+﻿#include <iostream>
 #include <fstream>
 #include <vector>
 #include <chrono>
@@ -10,6 +10,7 @@
 #include <memory>
 #include <string>
 #include <exception>
+#include <cstring>
 
 // Tobii Research API headers
 #include "tobii_research.h"
@@ -28,6 +29,12 @@ static void sleep_ms(int time) {
     usleep(time * 1000);
 }
 #endif
+
+// ==========================================
+// Forward Declarations
+// ==========================================
+class TobiiMaker;
+class TobiiStreamer;
 
 // ==========================================
 // Error Classes
@@ -104,8 +111,14 @@ struct TobiiConfig {
     std::string output_directory = "tobii_output";
     bool save_gaze_csv = true;
     bool save_eye_images = true;
-    int record_duration = 10;
+    // int record_duration = 10;
     int warmup_duration = 2;
+    
+    // streaming settings
+    bool enable_streaming = true;
+    int stream_fps = 30;  // 출력 FPS
+    bool stream_gaze = true;
+    bool stream_status = true;
 };
 
 TobiiConfig tobii_gonfig;
@@ -135,11 +148,202 @@ public:
 };
 
 // ==========================================
+// TobiiStreamer Class
+// ==========================================
+
+class TobiiStreamer {
+private:
+    // identifier
+    int streamer_id_;
+    
+    // state
+    std::atomic<bool> is_streaming_;
+    
+    // timing control
+    std::chrono::steady_clock::time_point last_gaze_output_;
+    std::chrono::steady_clock::time_point last_status_output_;
+    int gaze_interval_ms_;
+    int status_interval_ms_;
+    
+    // metrics
+    std::atomic<int> total_gaze_count_;
+
+public:
+    TobiiStreamer(int streamer_id) {
+        streamer_id_ = streamer_id;
+        is_streaming_ = false;
+        gaze_interval_ms_ = 1000 / tobii_gonfig.stream_fps;  // FPS 기반 간격
+        status_interval_ms_ = 1000;  // 1초마다 상태 출력
+        total_gaze_count_ = 0;
+    }
+
+    ~TobiiStreamer() {
+        stop();
+    }
+
+    void init() {
+        // empty
+    }
+
+    void setup() {
+        if (!tobii_gonfig.enable_streaming) return;
+        
+        std::cout << "[TobiiStreamer " << streamer_id_ << "] Setup completed\n";
+    }
+
+    void warmup() {
+        if (!tobii_gonfig.enable_streaming) return;
+        
+        std::cout << "[TobiiStreamer " << streamer_id_ << "] warmup done\n";
+    }
+
+    void run() {
+        if (!tobii_gonfig.enable_streaming) return;
+        
+        is_streaming_ = true;
+        last_gaze_output_ = std::chrono::steady_clock::now();
+        last_status_output_ = std::chrono::steady_clock::now();
+        
+        // 시작 신호 출력
+        _outputEvent("RECORDING_STARTED", "{}");
+        
+        std::cout << "[TobiiStreamer " << streamer_id_ << "] streaming started\n";
+    }
+
+    void stop() {
+        if (!tobii_gonfig.enable_streaming) return;
+        
+        is_streaming_ = false;
+        
+        // 종료 신호 출력
+        _outputEvent("RECORDING_STOPPED", "{}");
+        
+        std::cout << "[TobiiStreamer " << streamer_id_ << "] stopped\n";
+    }
+
+    void updateGaze(const TobiiGazeData& data) {
+        if (!is_streaming_.load() || !tobii_gonfig.stream_gaze) return;
+        
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_gaze_output_).count();
+            
+        if (elapsed >= gaze_interval_ms_) {
+            _outputGazeData(data);
+            last_gaze_output_ = now;
+            total_gaze_count_.fetch_add(1);
+        }
+        
+        // 상태 정보도 주기적으로 출력
+        _checkStatusOutput(now);
+    }
+
+    void updateStatus(int gaze_count, int left_eye_count, int right_eye_count, double elapsed_seconds) {
+        if (!is_streaming_.load() || !tobii_gonfig.stream_status) return;
+        
+        std::ostringstream status_json;
+        status_json << std::fixed << std::setprecision(1);
+        status_json << "{"
+                   << "\"recording\":true,"
+                   << "\"gaze_count\":" << gaze_count << ","
+                   << "\"left_eye_count\":" << left_eye_count << ","
+                   << "\"right_eye_count\":" << right_eye_count << ","
+                   << "\"elapsed_seconds\":" << elapsed_seconds << ","
+                   << "\"stream_count\":" << total_gaze_count_.load()
+                   << "}";
+        
+        _outputEvent("STATUS", status_json.str());
+    }
+
+private:
+    void _outputGazeData(const TobiiGazeData& data) {
+        std::ostringstream gaze_json;
+        gaze_json << std::fixed << std::setprecision(6);
+        
+        auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            data.timestamp_.time_since_epoch()).count();
+            
+        gaze_json << "{"
+                 << "\"timestamp\":" << timestamp_ms << ","
+                 << "\"device_timestamp\":" << data.device_timestamp_ << ","
+                 << "\"left_eye\":{"
+                 << "\"x\":" << data.left_eye_.x << ","
+                 << "\"y\":" << data.left_eye_.y << ","
+                 << "\"valid\":" << (data.left_eye_.validity ? "true" : "false") << ","
+                 << "\"pupil\":" << data.left_eye_.pupil_diameter
+                 << "},"
+                 << "\"right_eye\":{"
+                 << "\"x\":" << data.right_eye_.x << ","
+                 << "\"y\":" << data.right_eye_.y << ","
+                 << "\"valid\":" << (data.right_eye_.validity ? "true" : "false") << ","
+                 << "\"pupil\":" << data.right_eye_.pupil_diameter
+                 << "},"
+                 << "\"average\":{"
+                 << "\"x\":" << _getAverageX(data) << ","
+                 << "\"y\":" << _getAverageY(data) << ","
+                 << "\"valid\":" << (data.left_eye_.validity && data.right_eye_.validity ? "true" : "false")
+                 << "},"
+                 << "\"3d_left\":{"
+                 << "\"x\":" << data.left_eye_3d_.x << ","
+                 << "\"y\":" << data.left_eye_3d_.y << ","
+                 << "\"z\":" << data.left_eye_3d_.z << ","
+                 << "\"valid\":" << (data.left_eye_3d_.validity ? "true" : "false")
+                 << "},"
+                 << "\"3d_right\":{"
+                 << "\"x\":" << data.right_eye_3d_.x << ","
+                 << "\"y\":" << data.right_eye_3d_.y << ","
+                 << "\"z\":" << data.right_eye_3d_.z << ","
+                 << "\"valid\":" << (data.right_eye_3d_.validity ? "true" : "false")
+                 << "}"
+                 << "}";
+        
+        _outputEvent("GAZE_DATA", gaze_json.str());
+    }
+    
+    void _checkStatusOutput(std::chrono::steady_clock::time_point now) {
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_status_output_).count();
+            
+        if (elapsed >= status_interval_ms_) {
+            // 상태 업데이트는 TobiiMultiManager에서 호출
+            last_status_output_ = now;
+        }
+    }
+    
+    void _outputEvent(const std::string& event_type, const std::string& data) {
+        // STDOUT으로 구조화된 이벤트 출력
+        std::cout << event_type << ":" << data << std::endl;
+        std::cout.flush();  // 즉시 출력 보장
+    }
+    
+    double _getAverageX(const TobiiGazeData& data) {
+        if (data.left_eye_.validity && data.right_eye_.validity) {
+            return (data.left_eye_.x + data.right_eye_.x) / 2.0;
+        } else if (data.left_eye_.validity) {
+            return data.left_eye_.x;
+        } else if (data.right_eye_.validity) {
+            return data.right_eye_.x;
+        }
+        return 0.0;
+    }
+    
+    double _getAverageY(const TobiiGazeData& data) {
+        if (data.left_eye_.validity && data.right_eye_.validity) {
+            return (data.left_eye_.y + data.right_eye_.y) / 2.0;
+        } else if (data.left_eye_.validity) {
+            return data.left_eye_.y;
+        } else if (data.right_eye_.validity) {
+            return data.right_eye_.y;
+        }
+        return 0.0;
+    }
+};
+
+// ==========================================
 // TobiiManager Class
 // ==========================================
 
 class TobiiManager {
-/** __init__ */
 private:
     // state
     std::atomic<bool> enabled_;
@@ -161,8 +365,6 @@ public:
         // cleanup handled by stop()
     }
 
-/** methods */
-public:
     void init() {
         // empty - following your pattern
     }
@@ -272,7 +474,6 @@ private:
 // ==========================================
 
 class TobiiRecorder {
-/** __init__ */
 private:
     // identifier
     int recorder_id_;
@@ -282,6 +483,10 @@ private:
     
     // device
     TobiiResearchEyeTracker* eye_tracker_;
+
+    // connections
+    TobiiMaker* tobii_maker_;
+    TobiiStreamer* tobii_streamer_;
     
     // counters
     std::atomic<int> gaze_count_;
@@ -293,6 +498,8 @@ public:
         recorder_id_ = recorder_id;
         is_recording_ = false;
         eye_tracker_ = nullptr;
+        tobii_maker_ = nullptr;
+        tobii_streamer_ = nullptr;
         gaze_count_ = 0;
         left_eye_image_count_ = 0;
         right_eye_image_count_ = 0;
@@ -302,8 +509,6 @@ public:
         stop();
     }
 
-/** methods */
-public:
     void init() {
         // empty
     }
@@ -339,6 +544,15 @@ public:
             _unsubscribeFromStreams();
         }
         std::cout << "[TobiiRecorder " << recorder_id_ << "] stopped\n";
+    }
+
+    // setters
+    void setTobiiMaker(TobiiMaker* maker) {
+        tobii_maker_ = maker;
+    }
+    
+    void setTobiiStreamer(TobiiStreamer* streamer) {
+        tobii_streamer_ = streamer;
     }
 
     // getters
@@ -419,43 +633,9 @@ private:
         std::cout << "[TobiiRecorder " << recorder_id_ << "] Unsubscribed from all streams\n";
     }
 
-    void _gazeDataCallback(TobiiResearchGazeData* gaze_data) {
-        try {
-            if (!is_recording_.load()) return;
-            
-            // Convert and send to TobiiMaker
-            // Implementation will be handled by TobiiMaker
-            gaze_count_.fetch_add(1);
-        } catch (const std::exception& e) {
-            std::cout << "[TobiiRecorder " << recorder_id_ << "] Gaze callback error: " << e.what() << "\n";
-        } catch (...) {
-            std::cout << "[TobiiRecorder " << recorder_id_ << "] Unknown gaze callback error\n";
-        }
-    }
-
-    void _eyeImageCallback(TobiiResearchEyeImage* eye_image) {
-        try {
-            if (!is_recording_.load()) return;
-            
-            // Update counters
-            if (eye_image->camera_id == 0) {
-                left_eye_image_count_.fetch_add(1);
-            } else {
-                right_eye_image_count_.fetch_add(1);
-            }
-        } catch (const std::exception& e) {
-            std::cout << "[TobiiRecorder " << recorder_id_ << "] Eye image callback error: " << e.what() << "\n";
-        } catch (...) {
-            std::cout << "[TobiiRecorder " << recorder_id_ << "] Unknown eye image callback error\n";
-        }
-    }
-
-    void _bufferOverflowCallback(TobiiResearchNotification* notification) {
-        if (notification->notification_type == TOBII_RESEARCH_NOTIFICATION_STREAM_BUFFER_OVERFLOW) {
-            std::cout << "[TobiiRecorder " << recorder_id_ << " Warning] Buffer overflow in " 
-                      << notification->value.text << " stream\n";
-        }
-    }
+    void _gazeDataCallback(TobiiResearchGazeData* gaze_data);
+    void _eyeImageCallback(TobiiResearchEyeImage* eye_image);
+    void _bufferOverflowCallback(TobiiResearchNotification* notification);
 };
 
 // ==========================================
@@ -463,7 +643,6 @@ private:
 // ==========================================
 
 class TobiiMaker {
-/** __init__ */
 private:
     // identifier
     int recorder_id_;
@@ -492,8 +671,6 @@ public:
         stop();
     }
 
-/** methods */
-public:
     void init() {
         // empty
     }
@@ -596,6 +773,9 @@ private:
                       << data.right_eye_3d_.y << ","
                       << data.right_eye_3d_.z << ","
                       << (data.right_eye_3d_.validity ? 1 : 0) << "\n";
+        
+        // 즉시 flush하여 데이터 저장 보장
+        gaze_csv_file_.flush();
     }
 
     void _saveEyeImageJPG(const TobiiEyeImageData& data) {
@@ -622,16 +802,103 @@ private:
 };
 
 // ==========================================
+// TobiiRecorder Method Implementations (여기에 추가)
+// ==========================================
+
+void TobiiRecorder::_gazeDataCallback(TobiiResearchGazeData* gaze_data) {
+    try {
+        if (!is_recording_.load()) return;
+        
+        gaze_count_.fetch_add(1);
+        
+        if (tobii_maker_ || tobii_streamer_) {
+            TobiiGazeData converted_data;
+            converted_data.timestamp_ = std::chrono::system_clock::now();
+            converted_data.device_timestamp_ = gaze_data->device_time_stamp;
+            
+            // Left eye
+            converted_data.left_eye_.x = gaze_data->left_eye.gaze_point.position_on_display_area.x;
+            converted_data.left_eye_.y = gaze_data->left_eye.gaze_point.position_on_display_area.y;
+            converted_data.left_eye_.validity = gaze_data->left_eye.gaze_point.validity == TOBII_RESEARCH_VALIDITY_VALID;
+            converted_data.left_eye_.pupil_diameter = gaze_data->left_eye.pupil_data.diameter;
+            
+            // Right eye
+            converted_data.right_eye_.x = gaze_data->right_eye.gaze_point.position_on_display_area.x;
+            converted_data.right_eye_.y = gaze_data->right_eye.gaze_point.position_on_display_area.y;
+            converted_data.right_eye_.validity = gaze_data->right_eye.gaze_point.validity == TOBII_RESEARCH_VALIDITY_VALID;
+            converted_data.right_eye_.pupil_diameter = gaze_data->right_eye.pupil_data.diameter;
+            
+            // 3D positions
+            converted_data.left_eye_3d_.x = gaze_data->left_eye.gaze_origin.position_in_user_coordinates.x;
+            converted_data.left_eye_3d_.y = gaze_data->left_eye.gaze_origin.position_in_user_coordinates.y;
+            converted_data.left_eye_3d_.z = gaze_data->left_eye.gaze_origin.position_in_user_coordinates.z;
+            converted_data.left_eye_3d_.validity = gaze_data->left_eye.gaze_origin.validity == TOBII_RESEARCH_VALIDITY_VALID;
+            
+            converted_data.right_eye_3d_.x = gaze_data->right_eye.gaze_origin.position_in_user_coordinates.x;
+            converted_data.right_eye_3d_.y = gaze_data->right_eye.gaze_origin.position_in_user_coordinates.y;
+            converted_data.right_eye_3d_.z = gaze_data->right_eye.gaze_origin.position_in_user_coordinates.z;
+            converted_data.right_eye_3d_.validity = gaze_data->right_eye.gaze_origin.validity == TOBII_RESEARCH_VALIDITY_VALID;
+            
+            if (tobii_maker_) {
+                tobii_maker_->writeGazeData(converted_data);
+            }
+            
+            if (tobii_streamer_) {
+                tobii_streamer_->updateGaze(converted_data);
+            }
+        }
+    } catch (const std::exception& e) {
+        std::cout << "[TobiiRecorder " << recorder_id_ << "] Gaze callback error: " << e.what() << "\n";
+    }
+}
+
+void TobiiRecorder::_eyeImageCallback(TobiiResearchEyeImage* eye_image) {
+    try {
+        if (!is_recording_.load()) return;
+        
+        if (eye_image->camera_id == 0) {
+            left_eye_image_count_.fetch_add(1);
+        } else {
+            right_eye_image_count_.fetch_add(1);
+        }
+        
+        if (tobii_maker_) {
+            TobiiEyeImageData image_data;
+            image_data.timestamp_ = std::chrono::system_clock::now();
+            image_data.device_timestamp_ = eye_image->device_time_stamp;
+            image_data.camera_id_ = eye_image->camera_id;
+            image_data.width_ = eye_image->width;
+            image_data.height_ = eye_image->height;
+            
+            image_data.raw_data_.resize(eye_image->data_size);
+            std::memcpy(image_data.raw_data_.data(), eye_image->data, eye_image->data_size);
+            
+            tobii_maker_->writeEyeImage(image_data);
+        }
+    } catch (const std::exception& e) {
+        std::cout << "[TobiiRecorder " << recorder_id_ << "] Eye image callback error: " << e.what() << "\n";
+    }
+}
+
+void TobiiRecorder::_bufferOverflowCallback(TobiiResearchNotification* notification) {
+    if (notification->notification_type == TOBII_RESEARCH_NOTIFICATION_STREAM_BUFFER_OVERFLOW) {
+        std::cout << "[TobiiRecorder " << recorder_id_ << " Warning] Buffer overflow in " 
+                  << notification->value.text << " stream\n";
+    }
+}
+
+
+// ==========================================
 // TobiiMultiManager Class
 // ==========================================
 
 class TobiiMultiManager {
-/** __init__ */
 private:
     // managers
     std::unique_ptr<TobiiManager> tobii_manager_;
     std::unique_ptr<TobiiRecorder> tobii_recorder_;
     std::unique_ptr<TobiiMaker> tobii_maker_;
+    std::unique_ptr<TobiiStreamer> tobii_streamer_;
     
     // control
     std::atomic<bool> record_signal_;
@@ -648,12 +915,11 @@ public:
         stop();
     }
 
-/** methods */
-public:
     void init() {
         tobii_manager_ = std::make_unique<TobiiManager>();
         tobii_recorder_ = std::make_unique<TobiiRecorder>(0);
         tobii_maker_ = std::make_unique<TobiiMaker>(0);
+        tobii_streamer_ = std::make_unique<TobiiStreamer>(0);
     }
 
     void setup() {
@@ -673,6 +939,13 @@ public:
             std::cout << "[TobiiMultiManager] Setting up TobiiMaker...\n";
             tobii_maker_->setup();
             
+            std::cout << "[TobiiMultiManager] Setting up TobiiStreamer...\n";
+            tobii_streamer_->setup();
+
+            // 연결 설정
+            tobii_recorder_->setTobiiMaker(tobii_maker_.get());
+            tobii_recorder_->setTobiiStreamer(tobii_streamer_.get());
+            
             std::cout << "[TobiiMultiManager] Setup completed successfully\n";
         } catch (const std::exception& e) {
             std::cout << "[TobiiMultiManager] Setup failed: " << e.what() << "\n";
@@ -686,6 +959,7 @@ public:
         tobii_manager_->warmup();
         tobii_recorder_->warmup();
         tobii_maker_->warmup();
+        tobii_streamer_->warmup();
     }
 
     void run() {
@@ -694,6 +968,7 @@ public:
         tobii_manager_->run();
         tobii_recorder_->run();
         tobii_maker_->run();
+        tobii_streamer_->run();
         
         record_signal_ = true;
         monitor_thread_ = std::thread([this]() { _monitorRecording(); });
@@ -710,6 +985,7 @@ public:
         if (tobii_gonfig.enable_tobii) {
             tobii_recorder_->stop();
             tobii_maker_->stop();
+            tobii_streamer_->stop();
             tobii_manager_->stop();
         }
         
@@ -719,11 +995,11 @@ public:
 private:
     void _monitorRecording() {
         auto start_time = std::chrono::steady_clock::now();
-        auto end_time = start_time + std::chrono::seconds(tobii_gonfig.record_duration);
         
-        std::cout << "[TobiiMultiManager] Recording for " << tobii_gonfig.record_duration << " seconds...\n";
+        std::cout << "[TobiiMultiManager] Recording started (continuous mode)...\n";
         
-        while (std::chrono::steady_clock::now() < end_time && !stop_signal_.load()) {
+        // 무한 루프 - stop_signal_이 true가 될 때까지 계속
+        while (!stop_signal_.load()) {
             sleep_ms(1000);
             
             auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
@@ -734,9 +1010,19 @@ private:
                       << " | Gaze: " << tobii_recorder_->getGazeCount()
                       << " | Left Eye: " << tobii_recorder_->getLeftEyeImageCount()
                       << " | Right Eye: " << tobii_recorder_->getRightEyeImageCount() << "\r" << std::flush;
+            
+            // 스트리밍 상태 업데이트
+            if (tobii_streamer_) {
+                tobii_streamer_->updateStatus(
+                    tobii_recorder_->getGazeCount(),
+                    tobii_recorder_->getLeftEyeImageCount(),
+                    tobii_recorder_->getRightEyeImageCount(),
+                    elapsed
+                );
+            }
         }
         
-        std::cout << "\n[TobiiMultiManager] Recording completed\n";
+        std::cout << "\n[TobiiMultiManager] Recording stopped by user\n";
     }
 
     void _printSummary() {
@@ -762,21 +1048,23 @@ int main(int argc, char* argv[]) {
     std::cout << "[Debug] Exception handlers initialized\n";
     
     try {
-        // Parse command line arguments (following your pattern)
+        // Parse command line arguments
         std::cout << "[Debug] Parsing command line arguments...\n";
         for (int i = 1; i < argc; i++) {
             std::string arg = argv[i];
-            if (arg == "--duration" && i + 1 < argc) {
-                tobii_gonfig.record_duration = std::atoi(argv[i + 1]);
-                i++;
-            } else if (arg == "--output" && i + 1 < argc) {
+            if (arg == "--output" && i + 1 < argc) {
                 tobii_gonfig.output_directory = argv[i + 1];
                 i++;
+            } else if (arg == "--stream_fps" && i + 1 < argc) {
+                tobii_gonfig.stream_fps = std::atoi(argv[i + 1]);
+                i++;
+            } else if (arg == "--no_stream") {
+                tobii_gonfig.enable_streaming = false;
             }
         }
         
-        std::cout << "[Config] Record duration: " << tobii_gonfig.record_duration << " seconds\n";
         std::cout << "[Config] Output directory: " << tobii_gonfig.output_directory << "\n";
+        std::cout << "[Config] Stream FPS: " << tobii_gonfig.stream_fps << "\n";
         
         std::cout << "[Debug] Creating TobiiMultiManager...\n";
         TobiiMultiManager multiManager;
@@ -793,15 +1081,16 @@ int main(int argc, char* argv[]) {
         std::cout << "[Debug] Calling run()...\n";
         multiManager.run();
         
-        // Wait for completion or user input
-        std::string input;
-        std::cout << "[Info] Press Enter to stop early...\n";
-        std::getline(std::cin, input);
+        // 무한 대기 - 외부 신호로만 종료 가능
+        std::cout << "[Info] Recording in continuous mode...\n";
+        std::cout << "[Info] Use stop API or Ctrl+C to terminate\n";
         
-        std::cout << "[Debug] Calling stop()...\n";
-        multiManager.stop();
-        
-        std::cout << "[Debug] Program completed successfully\n";
+        // 프로그램이 종료되지 않도록 무한 대기
+        while (true) {
+            sleep_ms(1000);
+            // 여기서는 아무것도 하지 않고 대기만 함
+            // FastAPI의 stop 요청이나 Ctrl+C로만 종료 가능
+        }
         
     } catch (const TobiiManagerError& e) {
         std::cout << "[ERROR] TobiiManager: " << e.getMessage() << " (code: " << e.getCode() << ")\n";
