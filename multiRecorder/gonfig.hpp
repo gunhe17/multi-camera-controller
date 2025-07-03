@@ -8,6 +8,7 @@
 #include <sstream>
 #include <filesystem>
 #include <iomanip>
+#include <algorithm>
 #include <mfapi.h>
 
 #include "error/config_error.hpp"
@@ -45,6 +46,27 @@ public:
     std::string video_format = "avi";
     std::string image_format = "jpg";
     bool save_timestamp_csv = true;
+
+    // ==========================================
+    // NEW: Tobii settings
+    // ==========================================
+    bool enable_tobii = true;
+    std::string tobii_output_directory = "tobii_output";
+    std::string display_area_config_path = "";
+    bool save_gaze_csv = true;
+    bool save_eye_images = true;
+    int tobii_sample_rate = 120;
+
+    // ==========================================
+    // NEW: Tobii helper methods
+    // ==========================================
+    std::string getTobiiGazeCSVPath() const {
+        return tobii_output_directory + "/gaze_data.csv";
+    }
+    
+    std::string getTobiiEyeImageDir() const {
+        return tobii_output_directory + "/eye_images";
+    }
 
     // method
     bool validate() {
@@ -92,10 +114,27 @@ public:
             throw ConfigOutputError("이미지 포맷이 비어있습니다.");
         }
 
+        // NEW: Tobii validation
+        if (enable_tobii) {
+            if (tobii_output_directory.empty()) {
+                throw ConfigOutputError("Tobii 출력 디렉토리가 비어있습니다.");
+            }
+
+            if (tobii_sample_rate <= 0) {
+                throw ConfigOutputError("Tobii 샘플 레이트가 잘못되었습니다.");
+            }
+        }
+
         try {
             if (!std::filesystem::exists(output_directory)) {
                 std::filesystem::create_directories(output_directory);
                 std::cout << "[Config] 출력 디렉토리 생성: " << output_directory << "\n";
+            }
+
+            // NEW: Tobii directory creation
+            if (enable_tobii && !std::filesystem::exists(tobii_output_directory)) {
+                std::filesystem::create_directories(tobii_output_directory);
+                std::cout << "[Config] Tobii 출력 디렉토리 생성: " << tobii_output_directory << "\n";
             }
         } catch (const std::exception& e) {
             throw ConfigExternalError("출력 디렉토리 생성 실패: " + std::string(e.what()));
@@ -138,260 +177,178 @@ public:
         }
         
         std::cout << "  CSV 저장: " << (save_timestamp_csv ? "ON" : "OFF") << "\n";
-        
-        // Performance settings
-        std::cout << "  FFmpeg 경로: " << ffmpeg_path << "\n";
-        std::cout << "  Consumer Sleep: " << consumer_sleep_microseconds << "μs\n";
+
+        // NEW: Tobii settings
+        std::cout << "\n  === Tobii 설정 ===\n";
+        std::cout << "  Tobii 활성화: " << (enable_tobii ? "ON" : "OFF") << "\n";
+        if (enable_tobii) {
+            std::cout << "  Tobii 출력 디렉토리: " << tobii_output_directory << "\n";
+            std::cout << "  Gaze CSV 저장: " << (save_gaze_csv ? "ON" : "OFF") << "\n";
+            std::cout << "  Eye Image 저장: " << (save_eye_images ? "ON" : "OFF") << "\n";
+            std::cout << "  샘플 레이트: " << tobii_sample_rate << "Hz\n";
+            if (!display_area_config_path.empty()) {
+                std::cout << "  Display Area Config: " << display_area_config_path << "\n";
+            }
+        }
     }
-};
 
-/**
- * class: @parser
- */
-
-class ConfigParser {
-public:
+    // From original config file
     static Config parseArgs(int argc, char* argv[]) {
-        Config config;
+        Config conf;
         
-        // 핸들러 맵 정의 - 모든 설정 파라미터 포함
-        std::unordered_map<std::string, std::function<void(const std::string&)>> handlers = {
-            // ===================
+        std::unordered_map<std::string, std::function<void(const std::string&)>> parsers = {
             // Camera settings
-            // ===================
             {"--camera_indices", [&](const std::string& v) { 
-                config.camera_indices = _parseIntList(v); 
-            }},
-            {"--frame_width", [&](const std::string& v) { 
-                int value = std::stoi(v);
-                if (value <= 0) throw std::invalid_argument("frame_width must be positive");
-                config.frame_width = value; 
-            }},
-            {"--frame_height", [&](const std::string& v) { 
-                int value = std::stoi(v);
-                if (value <= 0) throw std::invalid_argument("frame_height must be positive");
-                config.frame_height = value; 
-            }},
-            {"--frame_rate", [&](const std::string& v) { 
-                int value = std::stoi(v);
-                if (value <= 0) throw std::invalid_argument("frame_rate must be positive");
-                config.frame_rate = value; 
-            }},
-            {"--pixel_format", [&](const std::string& v) { 
-                // 지원되는 포맷 검증
-                if (v != "MJPG" && v != "NV12" && v != "YUY2" && 
-                    v != "RGB32" && v != "I420" && v != "UYVY") {
-                    throw std::invalid_argument("Unsupported pixel format: " + v);
+                conf.camera_indices.clear();
+                std::istringstream iss(v);
+                std::string token;
+                while (iss >> token) {
+                    conf.camera_indices.push_back(std::stoi(token));
                 }
-                config.pixel_format = v; 
             }},
+            {"--frame_width", [&](const std::string& v) { conf.frame_width = std::stoi(v); }},
+            {"--frame_height", [&](const std::string& v) { conf.frame_height = std::stoi(v); }},
+            {"--frame_rate", [&](const std::string& v) { conf.frame_rate = std::stoi(v); }},
+            {"--pixel_format", [&](const std::string& v) { conf.pixel_format = v; }},
             
-            // ===================
             // Recording settings
-            // ===================
-            {"--record_duration", [&](const std::string& v) { 
-                int value = std::stoi(v);
-                if (value <= 0) throw std::invalid_argument("record_duration must be positive");
-                config.record_duration = value; 
-            }},
-            {"--consumer_sleep", [&](const std::string& v) { 
-                int value = std::stoi(v);
-                if (value <= 0) throw std::invalid_argument("consumer_sleep must be positive");
-                config.consumer_sleep_microseconds = value; 
-            }},
-            {"--sync_delay", [&](const std::string& v) { 
-                int value = std::stoi(v);
-                if (value < 0) throw std::invalid_argument("sync_delay cannot be negative");
-                config.sync_delay_milliseconds = value; 
-            }},
+            {"--record_duration", [&](const std::string& v) { conf.record_duration = std::stoi(v); }},
+            {"--duration", [&](const std::string& v) { conf.record_duration = std::stoi(v); }},
+            {"--consumer_sleep_microseconds", [&](const std::string& v) { conf.consumer_sleep_microseconds = std::stoi(v); }},
+            {"--sync_delay_milliseconds", [&](const std::string& v) { conf.sync_delay_milliseconds = std::stoi(v); }},
             
-            // ===================
             // Warmup settings
-            // ===================
-            {"--enable_warmup", [&](const std::string& v) { 
-                config.enable_warmup = _parseBool(v); 
-            }},
-            {"--warmup_duration", [&](const std::string& v) { 
-                int value = std::stoi(v);
-                if (value <= 0) throw std::invalid_argument("warmup_duration must be positive");
-                config.warmup_duration = value; 
-            }},
+            {"--enable_warmup", [&](const std::string& v) { conf.enable_warmup = _parseBool(v); }},
+            {"--warmup_duration", [&](const std::string& v) { conf.warmup_duration = std::stoi(v); }},
             
-            // ===================
             // Output settings
-            // ===================
             {"--output_mode", [&](const std::string& v) { 
-                std::string mode = _toLowercase(v);
-                if (mode == "video" || mode == "vid" || mode == "v") {
-                    config.output_mode = Config::OutputMode::VIDEO;
-                } else if (mode == "image" || mode == "images" || mode == "img" || mode == "i") {
-                    config.output_mode = Config::OutputMode::IMAGE;
+                if (v == "video") {
+                    conf.output_mode = Config::OutputMode::VIDEO;
+                } else if (v == "image") {
+                    conf.output_mode = Config::OutputMode::IMAGE;
                 } else {
-                    throw std::invalid_argument("Invalid output mode: " + v + " (use 'video' or 'image')");
+                    throw std::invalid_argument("Invalid output_mode: " + v + " (use 'video' or 'image')");
                 }
             }},
             {"--output_filename", [&](const std::string& v) { 
                 if (v.empty()) throw std::invalid_argument("output_filename cannot be empty");
-                config.output_filename = v; 
+                conf.output_filename = v; 
             }},
             {"--output", [&](const std::string& v) { 
                 if (v.empty()) throw std::invalid_argument("output cannot be empty");
-                config.output_filename = v; // 호환성
+                conf.output_filename = v;
             }},
             {"--output_directory", [&](const std::string& v) { 
                 if (v.empty()) throw std::invalid_argument("output_directory cannot be empty");
-                config.output_directory = v; 
+                conf.output_directory = v; 
             }},
             {"--output_dir", [&](const std::string& v) { 
                 if (v.empty()) throw std::invalid_argument("output_dir cannot be empty");
-                config.output_directory = v; 
+                conf.output_directory = v; 
             }},
             {"--video_format", [&](const std::string& v) { 
                 if (v.empty()) throw std::invalid_argument("video_format cannot be empty");
-                config.video_format = v; 
+                conf.video_format = v; 
             }},
             {"--image_format", [&](const std::string& v) { 
                 if (v.empty()) throw std::invalid_argument("image_format cannot be empty");
-                config.image_format = v; 
+                conf.image_format = v; 
             }},
             {"--save_timestamp_csv", [&](const std::string& v) { 
-                config.save_timestamp_csv = _parseBool(v); 
+                conf.save_timestamp_csv = _parseBool(v); 
             }},
             
-            // ===================
             // External tools
-            // ===================
             {"--ffmpeg_path", [&](const std::string& v) { 
                 if (v.empty()) throw std::invalid_argument("ffmpeg_path cannot be empty");
-                config.ffmpeg_path = v; 
+                conf.ffmpeg_path = v; 
             }},
             {"--ffmpeg", [&](const std::string& v) { 
                 if (v.empty()) throw std::invalid_argument("ffmpeg cannot be empty");
-                config.ffmpeg_path = v; 
+                conf.ffmpeg_path = v; 
+            }},
+
+            // ==========================================
+            // NEW: Tobii settings
+            // ==========================================
+            {"--enable_tobii", [&](const std::string& v) { 
+                conf.enable_tobii = _parseBool(v); 
+            }},
+            {"--tobii", [&](const std::string& v) { 
+                conf.enable_tobii = _parseBool(v); 
+            }},
+            {"--tobii_output_directory", [&](const std::string& v) { 
+                if (v.empty()) throw std::invalid_argument("tobii_output_directory cannot be empty");
+                conf.tobii_output_directory = v; 
+            }},
+            {"--tobii_output_dir", [&](const std::string& v) { 
+                if (v.empty()) throw std::invalid_argument("tobii_output_dir cannot be empty");
+                conf.tobii_output_directory = v; 
+            }},
+            {"--tobii_output", [&](const std::string& v) { 
+                if (v.empty()) throw std::invalid_argument("tobii_output cannot be empty");
+                conf.tobii_output_directory = v; 
+            }},
+            {"--display_area_config", [&](const std::string& v) { 
+                conf.display_area_config_path = v; 
+            }},
+            {"--save_gaze_csv", [&](const std::string& v) { 
+                conf.save_gaze_csv = _parseBool(v); 
+            }},
+            {"--save_eye_images", [&](const std::string& v) { 
+                conf.save_eye_images = _parseBool(v); 
+            }},
+            {"--tobii_sample_rate", [&](const std::string& v) { 
+                conf.tobii_sample_rate = std::stoi(v); 
             }},
         };
 
-        // 인자 파싱
-        for (int i = 1; i < argc; i += 2) {
-            if (i + 1 >= argc) {
-                throw ConfigInputError("값이 누락된 인자: " + std::string(argv[i]));
-            }
-
-            std::string key = argv[i];
-            std::string value = argv[i + 1];
-
-            // 핸들러 찾기
-            auto handler_it = handlers.find(key);
-            if (handler_it == handlers.end()) {
-                throw ConfigInputError("알 수 없는 인자: " + key + 
-                    "\n사용 가능한 인자들:\n" + _getUsageString());
-            }
-            
-            // 값 파싱 및 설정
-            try {
-                handler_it->second(value);
-            } catch (const std::invalid_argument& e) {
-                throw ConfigInputError("인자 파싱 실패 (" + key + "): " + e.what());
-            } catch (const std::out_of_range& e) {
-                throw ConfigInputError("인자 범위 오류 (" + key + "): " + e.what());
-            } catch (const std::exception& e) {
-                throw ConfigInputError("인자 처리 실패 (" + key + "): " + e.what());
-            }
-        }
-
-        return config;
+        _parseArguments(argc, argv, parsers);
+        
+        return conf;
     }
 
 private:
-    static std::vector<int> _parseIntList(const std::string& str) {
-        if (str.empty()) {
-            throw std::invalid_argument("정수 리스트가 비어있습니다");
-        }
-        
-        std::vector<int> result;
-        std::stringstream ss(str);
-        std::string item;
-        
-        while (std::getline(ss, item, ',')) {
-            // 공백 제거
-            item.erase(0, item.find_first_not_of(" \t"));
-            item.erase(item.find_last_not_of(" \t") + 1);
+    static void _parseArguments(int argc, char* argv[], 
+                        std::unordered_map<std::string, std::function<void(const std::string&)>>& parsers) {
+        for (int i = 1; i < argc; i++) {
+            std::string arg = argv[i];
             
-            if (item.empty()) continue;
-            
-            try {
-                int value = std::stoi(item);
-                if (value < 0) {
-                    throw std::invalid_argument("카메라 인덱스는 음수일 수 없습니다: " + item);
+            if (parsers.find(arg) != parsers.end()) {
+                if (i + 1 < argc) {
+                    std::string value = argv[i + 1];
+                    try {
+                        parsers[arg](value);
+                        i++; // Skip next argument as it's the value
+                    } catch (const std::exception& e) {
+                        throw std::runtime_error("Failed to parse " + arg + " with value '" + value + "': " + e.what());
+                    }
+                } else {
+                    throw std::runtime_error("Missing value for argument: " + arg);
                 }
-                result.push_back(value);
-            } catch (const std::invalid_argument&) {
-                throw std::invalid_argument("잘못된 숫자 형식: " + item);
-            } catch (const std::out_of_range&) {
-                throw std::invalid_argument("숫자 범위 초과: " + item);
+            } else {
+                std::cout << "[Config Warning] Unknown argument: " << arg << "\n";
             }
         }
-        
-        if (result.empty()) {
-            throw std::invalid_argument("유효한 카메라 인덱스가 없습니다");
-        }
-        
-        return result;
     }
-    
-    static bool _parseBool(const std::string& str) {
-        std::string lower = _toLowercase(str);
+
+    static bool _parseBool(const std::string& value) {
+        std::string lower_value = value;
+        std::transform(lower_value.begin(), lower_value.end(), lower_value.begin(), ::tolower);
         
-        if (lower == "true" || lower == "1" || lower == "on" || 
-            lower == "yes" || lower == "y" || lower == "enable") {
+        if (lower_value == "true" || lower_value == "1" || lower_value == "on" || lower_value == "yes") {
             return true;
-        } else if (lower == "false" || lower == "0" || lower == "off" || 
-                   lower == "no" || lower == "n" || lower == "disable") {
+        } else if (lower_value == "false" || lower_value == "0" || lower_value == "off" || lower_value == "no") {
             return false;
         } else {
-            throw std::invalid_argument("잘못된 불린 값: " + str + 
-                " (true/false, 1/0, on/off, yes/no, enable/disable 사용)");
+            throw std::invalid_argument("Invalid boolean value: " + value);
         }
-    }
-    
-    static std::string _toLowercase(const std::string& str) {
-        std::string result = str;
-        std::transform(result.begin(), result.end(), result.begin(), ::tolower);
-        return result;
-    }
-    
-    static std::string _getUsageString() {
-        return R"(카메라 설정:
-  --camera_indices               카메라 인덱스 (예: 0,1,2)
-  --frame_width                  프레임 너비 (기본값: 1280)
-  --frame_height                 프레임 높이 (기본값: 720)
-  --frame_rate                   프레임 레이트 (기본값: 30)
-  --pixel_format                 픽셀 포맷 (MJPG, NV12, YUY2, RGB32, I420, UYVY)
-
-녹화 설정:
-  --record_duration              녹화 시간(초) (기본값: 5)
-  --consumer_sleep               컨슈머 슬립(μs) (기본값: 100)
-  --sync_delay                   동기화 딜레이(ms) (기본값: 100)
-
-웜업 설정:
-  --enable_warmup                웜업 활성화 (true/false, 기본값: true)
-  --warmup_duration              웜업 시간(초) (기본값: 3)
-
-출력 설정:
-  --output_mode                  출력 모드 (video/image, 기본값: image)
-  --output_filename, --output    출력 파일명 (기본값: output)
-  --output_directory, --output_dir 출력 디렉토리 (기본값: .)
-  --video_format                 비디오 포맷 (기본값: avi)
-  --image_format                 이미지 포맷 (기본값: jpg)
-  --save_timestamp_csv           CSV 저장 (true/false, 기본값: true)
-
-외부 도구:
-  --ffmpeg_path, --ffmpeg        FFmpeg 경로 (기본값: ffmpeg))";
     }
 };
 
 /**
- * class: Manager
+ * class: ConfigManager
  */
 
 class ConfigManager {
@@ -407,7 +364,7 @@ public:
         Config config;
         
         try {
-            config = ConfigParser::parseArgs(argc, argv);
+            config = Config::parseArgs(argc, argv);
             config.validate();    
             config.print();
         } catch (const ConfigInputError& e) {

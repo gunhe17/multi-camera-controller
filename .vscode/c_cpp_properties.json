@@ -6,7 +6,9 @@
                 "${workspaceFolder}/multiCameraController",
                 "C:/Users/user/Workspace/ETW/EtwEnumerator/include",
                 "C:/Users/user/Workspace/TobiiPro/64/include",
-                "C:/Users/user/Workspace/TobiiPro/64/lib"
+                "C:/Users/user/Workspace/TobiiPro/64/lib",
+                "C:/Users/user/Workspace/evk_sdk/include",
+                "C:/Users/user/Workspace/evk_sdk/lib"
             ],
             "defines": [
                 "_DEBUG",

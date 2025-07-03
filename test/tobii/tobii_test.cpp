@@ -10,6 +10,9 @@
 #include <memory>
 #include <string>
 #include <exception>
+#include <array>
+#include <mutex>
+#include <algorithm>
 #include <cstring>
 
 // Tobii Research API headers
@@ -102,6 +105,51 @@ struct TobiiEyeImageData {
     std::vector<uint8_t> raw_data_;
 };
 
+struct GazeVector {
+    double x, y, z;
+    double magnitude;
+    bool validity;
+};
+
+struct ScreenIntersection {
+    double x, y, z;
+    double screen_x, screen_y;
+    bool valid_intersection;
+};
+
+struct QualityMetrics {
+    double tracking_confidence;
+    double eye_distance;
+    double head_position_stability;
+};
+
+struct Enhanced3DGazeData {
+    std::chrono::system_clock::time_point timestamp_;
+    int64_t device_timestamp_;
+    
+    // Original data
+    TobiiGazeData::EyeGazePoint left_eye_, right_eye_;
+    TobiiGazeData::EyePosition3D left_eye_3d_, right_eye_3d_;
+    
+    // Enhanced calculations
+    GazeVector left_gaze_vector_, right_gaze_vector_, averaged_gaze_vector_;
+    ScreenIntersection screen_hit_point_;
+    QualityMetrics quality_;
+};
+
+struct ScreenConfig {
+    double width_mm = 531.0;
+    double height_mm = 298.0;
+    double distance_mm = 600.0;
+    double pixel_width = 1920;
+    double pixel_height = 1080;
+    
+    struct Pose {
+        double x = 0, y = 0, z = 0;
+        double roll = 0, pitch = 0, yaw = 0;
+    } screen_pose_;
+};
+
 // ==========================================
 // Config
 // ==========================================
@@ -111,17 +159,51 @@ struct TobiiConfig {
     std::string output_directory = "tobii_output";
     bool save_gaze_csv = true;
     bool save_eye_images = true;
-    // int record_duration = 10;
     int warmup_duration = 2;
+
+    // calibration settings - 추가
+    bool load_calibration = false;
+    std::string calibration_file_path = "";  // 빈 문자열이면 자동 검색
     
     // streaming settings
     bool enable_streaming = true;
-    int stream_fps = 30;  // 출력 FPS
+    int stream_fps = 30;
     bool stream_gaze = true;
     bool stream_status = true;
+    
+    // Enhanced 3D visualization - 추가
+    bool enable_enhanced_3d = true;
+    
+    struct ScreenSettings {
+        double width_mm = 510.0;
+        double height_mm = 287.0; 
+        double distance_mm = 600.0;
+        double pixel_width = 1920;
+        double pixel_height = 1080;
+    } screen;
 };
 
+
 TobiiConfig tobii_gonfig;
+
+struct EnhancedTobiiConfig {
+    TobiiConfig base_config;
+    
+    struct VisualizationConfig {
+        bool enable_3d_calculation = true;
+        bool stream_gaze_vectors = true;
+        bool stream_screen_intersections = true;
+        bool stream_trajectory_buffer = true;
+        
+        ScreenConfig screen;
+        
+        int trajectory_buffer_size = 1000;
+        double min_tracking_confidence = 0.7;
+    } visualization;
+};
+
+
+EnhancedTobiiConfig enhanced_tobii_config;
 
 // ==========================================
 // Exception Debug Helper
@@ -148,11 +230,257 @@ public:
 };
 
 // ==========================================
+// GazeCalculator
+// ==========================================
+
+class GazeCalculator {
+private:
+    ScreenConfig screen_config_;
+    
+    bool isValidData(const TobiiGazeData& data) const {
+        auto isValidFloat = [](double val) {
+            return !std::isnan(val) && !std::isinf(val);
+        };
+        
+        bool left_valid = data.left_eye_.validity && 
+                         isValidFloat(data.left_eye_.x) && 
+                         isValidFloat(data.left_eye_.y);
+                         
+        bool right_valid = data.right_eye_.validity && 
+                          isValidFloat(data.right_eye_.x) && 
+                          isValidFloat(data.right_eye_.y);
+                          
+        bool left_3d_valid = data.left_eye_3d_.validity &&
+                            isValidFloat(data.left_eye_3d_.x) &&
+                            isValidFloat(data.left_eye_3d_.y) &&
+                            isValidFloat(data.left_eye_3d_.z);
+                            
+        bool right_3d_valid = data.right_eye_3d_.validity &&
+                             isValidFloat(data.right_eye_3d_.x) &&
+                             isValidFloat(data.right_eye_3d_.y) &&
+                             isValidFloat(data.right_eye_3d_.z);
+        
+        return (left_valid || right_valid) && (left_3d_valid || right_3d_valid);
+    }
+    
+
+public:
+    GazeCalculator(const ScreenConfig& config = ScreenConfig()) : screen_config_(config) {}
+    
+    Enhanced3DGazeData calculateEnhancedGaze(const TobiiGazeData& raw_data) {
+        Enhanced3DGazeData enhanced;
+        enhanced.timestamp_ = raw_data.timestamp_;
+        enhanced.device_timestamp_ = raw_data.device_timestamp_;
+        enhanced.left_eye_ = raw_data.left_eye_;
+        enhanced.right_eye_ = raw_data.right_eye_;
+        enhanced.left_eye_3d_ = raw_data.left_eye_3d_;
+        enhanced.right_eye_3d_ = raw_data.right_eye_3d_;
+        
+        // 데이터 유효성 검사 추가
+        if (!isValidData(raw_data)) {
+            // Invalid data - return with zero values
+            enhanced.left_gaze_vector_ = {0, 0, 0, 0, false};
+            enhanced.right_gaze_vector_ = {0, 0, 0, 0, false};
+            enhanced.averaged_gaze_vector_ = {0, 0, 0, 0, false};
+            enhanced.screen_hit_point_ = {0, 0, 0, 0, 0, false};
+            enhanced.quality_ = {0, 0, 0};
+            return enhanced;
+        }
+        
+        // Calculate gaze vectors
+        enhanced.left_gaze_vector_ = calculateGazeDirection(raw_data.left_eye_3d_, raw_data.left_eye_);
+        enhanced.right_gaze_vector_ = calculateGazeDirection(raw_data.right_eye_3d_, raw_data.right_eye_);
+        enhanced.averaged_gaze_vector_ = calculateAverageGazeVector(enhanced.left_gaze_vector_, enhanced.right_gaze_vector_);
+        
+        // Calculate screen intersection
+        enhanced.screen_hit_point_ = calculateScreenIntersection(enhanced.averaged_gaze_vector_, 
+                                                               getAverageEyePosition(raw_data));
+        
+        // Calculate quality metrics
+        enhanced.quality_ = calculateTrackingQuality(raw_data);
+        
+        return enhanced;
+    }
+    
+    bool isValidData(const TobiiGazeData& data) {
+        return !std::isnan(data.left_eye_.x) && 
+               !std::isnan(data.right_eye_.x) &&
+               data.left_eye_.validity || data.right_eye_.validity;
+    }
+
+private:
+    GazeVector calculateGazeDirection(const TobiiGazeData::EyePosition3D& eye_pos, 
+                                    const TobiiGazeData::EyeGazePoint& gaze_2d) {
+        GazeVector vec;
+        vec.validity = eye_pos.validity && gaze_2d.validity;
+        
+        if (!vec.validity) {
+            vec.x = vec.y = vec.z = vec.magnitude = 0.0;
+            return vec;
+        }
+        
+        // Convert 2D gaze point to 3D direction
+        // Assuming screen at z = screen_distance
+        double screen_x = (gaze_2d.x - 0.5) * screen_config_.width_mm;
+        double screen_y = (gaze_2d.y - 0.5) * screen_config_.height_mm;
+        double screen_z = screen_config_.distance_mm;
+        
+        // Direction vector from eye to screen point
+        vec.x = screen_x - eye_pos.x;
+        vec.y = screen_y - eye_pos.y;
+        vec.z = screen_z - eye_pos.z;
+        
+        // Normalize
+        vec.magnitude = sqrt(vec.x*vec.x + vec.y*vec.y + vec.z*vec.z);
+        if (vec.magnitude > 0) {
+            vec.x /= vec.magnitude;
+            vec.y /= vec.magnitude;
+            vec.z /= vec.magnitude;
+        }
+        
+        return vec;
+    }
+    
+    GazeVector calculateAverageGazeVector(const GazeVector& left, const GazeVector& right) {
+        GazeVector avg;
+        
+        if (left.validity && right.validity) {
+            avg.x = (left.x + right.x) / 2.0;
+            avg.y = (left.y + right.y) / 2.0;
+            avg.z = (left.z + right.z) / 2.0;
+            avg.magnitude = sqrt(avg.x*avg.x + avg.y*avg.y + avg.z*avg.z);
+            avg.validity = true;
+        } else if (left.validity) {
+            avg = left;
+        } else if (right.validity) {
+            avg = right;
+        } else {
+            avg.x = avg.y = avg.z = avg.magnitude = 0.0;
+            avg.validity = false;
+        }
+        
+        return avg;
+    }
+    
+    ScreenIntersection calculateScreenIntersection(const GazeVector& gaze_vec, 
+                                                 const TobiiGazeData::EyePosition3D& eye_pos) {
+        ScreenIntersection intersection;
+        intersection.valid_intersection = gaze_vec.validity && eye_pos.validity;
+        
+        if (!intersection.valid_intersection) {
+            intersection.x = intersection.y = intersection.z = 0.0;
+            intersection.screen_x = intersection.screen_y = 0.0;
+            return intersection;
+        }
+        
+        // Ray-plane intersection (assuming screen at z = distance)
+        double t = (screen_config_.distance_mm - eye_pos.z) / gaze_vec.z;
+        
+        intersection.x = eye_pos.x + t * gaze_vec.x;
+        intersection.y = eye_pos.y + t * gaze_vec.y;
+        intersection.z = screen_config_.distance_mm;
+        
+        // Convert to screen coordinates (0-1)
+        intersection.screen_x = (intersection.x / screen_config_.width_mm) + 0.5;
+        intersection.screen_y = (intersection.y / screen_config_.height_mm) + 0.5;
+        
+        // Check if within screen bounds
+        intersection.valid_intersection = (intersection.screen_x >= 0 && intersection.screen_x <= 1 &&
+                                         intersection.screen_y >= 0 && intersection.screen_y <= 1);
+        
+        return intersection;
+    }
+    
+    QualityMetrics calculateTrackingQuality(const TobiiGazeData& data) {
+        QualityMetrics quality;
+        
+        // Simple confidence based on validity
+        int valid_count = (data.left_eye_.validity ? 1 : 0) + (data.right_eye_.validity ? 1 : 0) +
+                         (data.left_eye_3d_.validity ? 1 : 0) + (data.right_eye_3d_.validity ? 1 : 0);
+        quality.tracking_confidence = valid_count / 4.0;
+        
+        // Eye distance
+        if (data.left_eye_3d_.validity && data.right_eye_3d_.validity) {
+            double dx = data.left_eye_3d_.x - data.right_eye_3d_.x;
+            double dy = data.left_eye_3d_.y - data.right_eye_3d_.y;
+            double dz = data.left_eye_3d_.z - data.right_eye_3d_.z;
+            quality.eye_distance = sqrt(dx*dx + dy*dy + dz*dz);
+        } else {
+            quality.eye_distance = 0.0;
+        }
+        
+        // Head stability (simplified)
+        quality.head_position_stability = quality.tracking_confidence;
+        
+        return quality;
+    }
+    
+    TobiiGazeData::EyePosition3D getAverageEyePosition(const TobiiGazeData& data) {
+        TobiiGazeData::EyePosition3D avg;
+        
+        if (data.left_eye_3d_.validity && data.right_eye_3d_.validity) {
+            avg.x = (data.left_eye_3d_.x + data.right_eye_3d_.x) / 2.0;
+            avg.y = (data.left_eye_3d_.y + data.right_eye_3d_.y) / 2.0;
+            avg.z = (data.left_eye_3d_.z + data.right_eye_3d_.z) / 2.0;
+            avg.validity = true;
+        } else if (data.left_eye_3d_.validity) {
+            avg = data.left_eye_3d_;
+        } else if (data.right_eye_3d_.validity) {
+            avg = data.right_eye_3d_;
+        } else {
+            avg.x = avg.y = avg.z = 0.0;
+            avg.validity = false;
+        }
+        
+        return avg;
+    }
+};
+
+
+// ==========================================
+// GazeTrajectoryBuffer
+// ==========================================
+
+class GazeTrajectoryBuffer {
+private:
+    static const size_t BUFFER_SIZE = 1000;
+    std::array<Enhanced3DGazeData, BUFFER_SIZE> buffer_;
+    
+    size_t write_index_ = 0;
+    size_t count_ = 0;
+    std::mutex buffer_mutex_;
+    
+public:
+    void addPoint(const Enhanced3DGazeData& data) {
+        std::lock_guard<std::mutex> lock(buffer_mutex_);
+        buffer_[write_index_] = data;
+        write_index_ = (write_index_ + 1) % BUFFER_SIZE;
+        if (count_ < BUFFER_SIZE) count_++;
+    }
+    
+    std::vector<Enhanced3DGazeData> getRecentTrajectory(size_t num_points) {
+        std::lock_guard<std::mutex> lock(buffer_mutex_);
+        std::vector<Enhanced3DGazeData> trajectory;
+        
+        size_t points_to_get = (num_points < count_) ? num_points : count_;
+        trajectory.reserve(points_to_get);
+        
+        for (size_t i = 0; i < points_to_get; i++) {
+            size_t index = (write_index_ - points_to_get + i + BUFFER_SIZE) % BUFFER_SIZE;
+            trajectory.push_back(buffer_[index]);
+        }
+        
+        return trajectory;
+    }
+};
+
+
+// ==========================================
 // TobiiStreamer Class
 // ==========================================
 
 class TobiiStreamer {
-private:
+protected:
     // identifier
     int streamer_id_;
     
@@ -172,15 +500,14 @@ public:
     TobiiStreamer(int streamer_id) {
         streamer_id_ = streamer_id;
         is_streaming_ = false;
-        gaze_interval_ms_ = 1000 / tobii_gonfig.stream_fps;  // FPS 기반 간격
-        status_interval_ms_ = 1000;  // 1초마다 상태 출력
+        gaze_interval_ms_ = 1000 / tobii_gonfig.stream_fps;
+        status_interval_ms_ = 1000;
         total_gaze_count_ = 0;
     }
 
-    ~TobiiStreamer() {
+    virtual ~TobiiStreamer() {
         stop();
     }
-
     void init() {
         // empty
     }
@@ -221,7 +548,7 @@ public:
         std::cout << "[TobiiStreamer " << streamer_id_ << "] stopped\n";
     }
 
-    void updateGaze(const TobiiGazeData& data) {
+    virtual void updateGaze(const TobiiGazeData& data) {
         if (!is_streaming_.load() || !tobii_gonfig.stream_gaze) return;
         
         auto now = std::chrono::steady_clock::now();
@@ -255,7 +582,7 @@ public:
         _outputEvent("STATUS", status_json.str());
     }
 
-private:
+protected:
     void _outputGazeData(const TobiiGazeData& data) {
         std::ostringstream gaze_json;
         gaze_json << std::fixed << std::setprecision(6);
@@ -339,6 +666,97 @@ private:
     }
 };
 
+
+class EnhancedTobiiStreamer : public TobiiStreamer {
+private:
+    GazeCalculator calculator_;
+    GazeTrajectoryBuffer trajectory_buffer_;
+    ScreenConfig screen_config_;
+    
+public:
+    EnhancedTobiiStreamer(int streamer_id, const ScreenConfig& config = ScreenConfig()) 
+        : TobiiStreamer(streamer_id), calculator_(config), screen_config_(config) {}
+    
+    void updateGaze(const TobiiGazeData& data) override {  // override 추가
+        updateEnhancedGaze(data);
+    }
+
+    void updateEnhancedGaze(const TobiiGazeData& data) {
+        if (!is_streaming_.load() || !tobii_gonfig.stream_gaze) {
+            return;
+        }
+
+        // Calculate enhanced data
+        Enhanced3DGazeData enhanced = calculator_.calculateEnhancedGaze(data);
+        trajectory_buffer_.addPoint(enhanced);
+        
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - last_gaze_output_).count();
+            
+        if (elapsed >= gaze_interval_ms_) {
+            _outputEnhancedGazeData(enhanced);
+            last_gaze_output_ = now;
+            total_gaze_count_.fetch_add(1);
+            
+            // 주기적으로 상태 출력
+            static int debug_counter = 0;
+            if (++debug_counter % 30 == 1) {  // 1초마다 한 번
+                std::cout << "[EnhancedTobiiStreamer] Processed " << total_gaze_count_.load() 
+                        << " enhanced gaze points\n";
+            }
+        }
+    }
+    
+private:
+    void _outputEnhancedGazeData(const Enhanced3DGazeData& data) {
+        std::ostringstream gaze_json;
+        gaze_json << std::fixed << std::setprecision(6);
+        
+        auto timestamp_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            data.timestamp_.time_since_epoch()).count();
+            
+        gaze_json << "{"
+                 << "\"timestamp\":" << timestamp_ms << ","
+                 << "\"device_timestamp\":" << data.device_timestamp_ << ","
+                 << "\"3d_visualization\":{"
+                 << "\"left_eye_ray\":{"
+                 << "\"origin\":[" << data.left_eye_3d_.x << "," << data.left_eye_3d_.y << "," << data.left_eye_3d_.z << "],"
+                 << "\"direction\":[" << data.left_gaze_vector_.x << "," << data.left_gaze_vector_.y << "," << data.left_gaze_vector_.z << "],"
+                 << "\"valid\":" << (data.left_gaze_vector_.validity ? "true" : "false")
+                 << "},"
+                 << "\"right_eye_ray\":{"
+                 << "\"origin\":[" << data.right_eye_3d_.x << "," << data.right_eye_3d_.y << "," << data.right_eye_3d_.z << "],"
+                 << "\"direction\":[" << data.right_gaze_vector_.x << "," << data.right_gaze_vector_.y << "," << data.right_gaze_vector_.z << "],"
+                 << "\"valid\":" << (data.right_gaze_vector_.validity ? "true" : "false")
+                 << "},"
+                 << "\"average_ray\":{"
+                 << "\"direction\":[" << data.averaged_gaze_vector_.x << "," << data.averaged_gaze_vector_.y << "," << data.averaged_gaze_vector_.z << "],"
+                 << "\"valid\":" << (data.averaged_gaze_vector_.validity ? "true" : "false")
+                 << "},"
+                 << "\"screen_hit\":{"
+                 << "\"point_3d\":[" << data.screen_hit_point_.x << "," << data.screen_hit_point_.y << "," << data.screen_hit_point_.z << "],"
+                 << "\"screen_coords\":[" << data.screen_hit_point_.screen_x << "," << data.screen_hit_point_.screen_y << "],"
+                 << "\"valid\":" << (data.screen_hit_point_.valid_intersection ? "true" : "false")
+                 << "},"
+                 << "\"quality\":{"
+                 << "\"confidence\":" << data.quality_.tracking_confidence << ","
+                 << "\"eye_distance\":" << data.quality_.eye_distance << ","
+                 << "\"stability\":" << data.quality_.head_position_stability
+                 << "},"
+                 << "\"screen_config\":{"
+                 << "\"width_mm\":" << screen_config_.width_mm << ","
+                 << "\"height_mm\":" << screen_config_.height_mm << ","
+                 << "\"distance_mm\":" << screen_config_.distance_mm
+                 << "}"
+                 << "}"
+                 << "}";
+        
+        _outputEvent("ENHANCED_GAZE_DATA", gaze_json.str());
+    }
+};
+
+
 // ==========================================
 // TobiiManager Class
 // ==========================================
@@ -355,10 +773,14 @@ private:
     std::string device_name_;
     std::string model_;
 
+    // calibration info - 추가
+    bool calibration_loaded_;
+    std::string loaded_calibration_file_;
 public:
     TobiiManager() {
         enabled_ = false;
         eye_tracker_ = nullptr;
+        calibration_loaded_ = false;
     }
 
     ~TobiiManager() {
@@ -375,6 +797,7 @@ public:
             _findEyeTrackers();
             _connectEyeTracker();
             _setupDeviceInfo();
+            _loadCalibrationData();  // calibration 로딩 추가
             enabled_ = true;
             std::cout << "[TobiiManager] Setup completed successfully\n";
         } catch (const std::exception& e) {
@@ -409,8 +832,79 @@ public:
     // getter
     bool isEnabled() const { return enabled_.load(); }
     TobiiResearchEyeTracker* getEyeTracker() const { return eye_tracker_; }
-
+    bool isCalibrationLoaded() const { return calibration_loaded_; }
+    const std::string& getLoadedCalibrationFile() const { return loaded_calibration_file_; }
 private:
+    void _loadCalibrationData() {
+        // calibration_file_path가 명시적으로 지정된 경우에만 로딩 시도
+        if (tobii_gonfig.calibration_file_path.empty()) {
+            std::cout << "[TobiiManager] No calibration file specified - running without calibration\n";
+            calibration_loaded_ = false;
+            return;
+        }
+        
+        // 파일 경로가 지정되었으면 자동으로 load_calibration을 true로 설정
+        tobii_gonfig.load_calibration = true;
+        
+        std::string calibration_file = tobii_gonfig.calibration_file_path;
+        
+        // 파일 존재 여부 확인
+        if (!std::filesystem::exists(calibration_file)) {
+            std::cout << "[TobiiManager] Specified calibration file not found: " 
+                      << calibration_file << " - running without calibration\n";
+            calibration_loaded_ = false;
+            return;
+        }
+        
+        try {
+            std::cout << "[TobiiManager] Loading calibration from: " << calibration_file << "\n";
+            
+            // Read calibration file
+            std::ifstream file(calibration_file, std::ios::binary | std::ios::ate);
+            if (!file.is_open()) {
+                throw TobiiManagerError("Failed to open calibration file: " + calibration_file, 2006);
+            }
+            
+            std::streamsize file_size = file.tellg();
+            file.seekg(0, std::ios::beg);
+            
+            if (file_size <= 0) {
+                throw TobiiManagerError("Calibration file is empty: " + calibration_file, 2007);
+            }
+            
+            // Allocate buffer and read data
+            std::vector<uint8_t> calibration_buffer(file_size);
+            if (!file.read(reinterpret_cast<char*>(calibration_buffer.data()), file_size)) {
+                throw TobiiManagerError("Failed to read calibration file: " + calibration_file, 2008);
+            }
+            file.close();
+            
+            // Create calibration data structure
+            TobiiResearchCalibrationData calibration_data;
+            calibration_data.data = calibration_buffer.data();
+            calibration_data.size = static_cast<size_t>(file_size);
+            
+            // Apply calibration to eye tracker
+            TobiiResearchStatus status = tobii_research_apply_calibration_data(eye_tracker_, &calibration_data);
+            
+            if (status != TOBII_RESEARCH_STATUS_OK) {
+                throw TobiiManagerError("Failed to apply calibration data. Status: " + std::to_string(status), 2009);
+            }
+            
+            calibration_loaded_ = true;
+            loaded_calibration_file_ = calibration_file;
+            
+            std::cout << "[TobiiManager] Calibration successfully loaded and applied (" 
+                      << file_size << " bytes)\n";
+                      
+        } catch (const std::exception& e) {
+            std::cout << "[TobiiManager] Failed to load calibration: " << e.what() 
+                      << " - continuing without calibration\n";
+            calibration_loaded_ = false;
+            // Continue without calibration rather than failing completely
+        }
+    }
+
     void _findEyeTrackers() {
         TobiiResearchEyeTrackers* eyetrackers = nullptr;
         TobiiResearchStatus status = tobii_research_find_all_eyetrackers(&eyetrackers);
@@ -843,7 +1337,11 @@ void TobiiRecorder::_gazeDataCallback(TobiiResearchGazeData* gaze_data) {
                 tobii_maker_->writeGazeData(converted_data);
             }
             
-            if (tobii_streamer_) {
+            // EnhancedTobiiStreamer 대신 기존 방식 사용
+            EnhancedTobiiStreamer* enhanced_streamer = dynamic_cast<EnhancedTobiiStreamer*>(tobii_streamer_);
+            if (enhanced_streamer) {
+                enhanced_streamer->updateEnhancedGaze(converted_data);
+            } else if (tobii_streamer_) {
                 tobii_streamer_->updateGaze(converted_data);
             }
         }
@@ -919,7 +1417,21 @@ public:
         tobii_manager_ = std::make_unique<TobiiManager>();
         tobii_recorder_ = std::make_unique<TobiiRecorder>(0);
         tobii_maker_ = std::make_unique<TobiiMaker>(0);
-        tobii_streamer_ = std::make_unique<TobiiStreamer>(0);
+
+        if (tobii_gonfig.enable_enhanced_3d) {
+            ScreenConfig screen_config;
+            screen_config.width_mm = tobii_gonfig.screen.width_mm;
+            screen_config.height_mm = tobii_gonfig.screen.height_mm;
+            screen_config.distance_mm = tobii_gonfig.screen.distance_mm;
+            screen_config.pixel_width = tobii_gonfig.screen.pixel_width;
+            screen_config.pixel_height = tobii_gonfig.screen.pixel_height;
+            
+            tobii_streamer_ = std::make_unique<EnhancedTobiiStreamer>(0, screen_config);
+            std::cout << "[TobiiMultiManager] Enhanced 3D visualization enabled\n";
+        } else {
+            tobii_streamer_ = std::make_unique<TobiiStreamer>(0);
+            std::cout << "[TobiiMultiManager] Basic streaming enabled\n";
+        }
     }
 
     void setup() {
@@ -1033,6 +1545,13 @@ private:
         std::cout << "Left eye images: " << tobii_recorder_->getLeftEyeImageCount() << "\n";
         std::cout << "Right eye images: " << tobii_recorder_->getRightEyeImageCount() << "\n";
         std::cout << "Output directory: " << tobii_gonfig.output_directory << "\n";
+        
+        // calibration 상태 추가
+        if (tobii_manager_->isCalibrationLoaded()) {
+            std::cout << "Calibration: Loaded (" << tobii_manager_->getLoadedCalibrationFile() << ")\n";
+        } else {
+            std::cout << "Calibration: Not loaded\n";
+        }
     }
 };
 
@@ -1060,12 +1579,38 @@ int main(int argc, char* argv[]) {
                 i++;
             } else if (arg == "--no_stream") {
                 tobii_gonfig.enable_streaming = false;
+            } else if (arg == "--enhanced_3d" && i + 1 < argc) {
+                tobii_gonfig.enable_enhanced_3d = (std::string(argv[i + 1]) == "true");
+                i++;
+            } else if (arg == "--calibration_file" && i + 1 < argc) {
+                tobii_gonfig.calibration_file_path = argv[i + 1];
+                // 파일 경로가 지정되면 자동으로 calibration 로딩 활성화
+                tobii_gonfig.load_calibration = true;
+                i++;
+            } else if (arg == "--screen_distance" && i + 1 < argc) {
+                tobii_gonfig.screen.distance_mm = std::atof(argv[i + 1]);
+                i++;
+            } else if (arg == "--screen_width" && i + 1 < argc) {
+                tobii_gonfig.screen.width_mm = std::atof(argv[i + 1]);
+                i++;
+            } else if (arg == "--screen_height" && i + 1 < argc) {
+                tobii_gonfig.screen.height_mm = std::atof(argv[i + 1]);
+                i++;
             }
         }
-        
+
         std::cout << "[Config] Output directory: " << tobii_gonfig.output_directory << "\n";
         std::cout << "[Config] Stream FPS: " << tobii_gonfig.stream_fps << "\n";
+        std::cout << "[Config] Enhanced 3D: " << (tobii_gonfig.enable_enhanced_3d ? "enabled" : "disabled") << "\n";
         
+        if (tobii_gonfig.load_calibration && !tobii_gonfig.calibration_file_path.empty()) {
+            std::cout << "[Config] Calibration file: " << tobii_gonfig.calibration_file_path << "\n";
+        } else {
+            std::cout << "[Config] Calibration: Not specified (running without calibration)\n";
+        }
+        
+        std::cout << "[Config] Screen: " << tobii_gonfig.screen.width_mm << "x" << tobii_gonfig.screen.height_mm << "mm at " << tobii_gonfig.screen.distance_mm << "mm\n";
+                
         std::cout << "[Debug] Creating TobiiMultiManager...\n";
         TobiiMultiManager multiManager;
         
